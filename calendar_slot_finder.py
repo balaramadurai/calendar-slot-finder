@@ -103,9 +103,9 @@ class CalendarSlotFinder:
                         slots.append(TimeSlot(start_dt, end_dt, title))
         
         except FileNotFoundError:
-            print(f"Warning: Could not read org file: {filepath}")
+            pass  # File doesn't exist, skip silently
         except Exception as e:
-            print(f"Warning: Error parsing org file {filepath}: {e}")
+            print(f"⚠️  Error parsing org file {filepath}: {e}")
             
         return slots
     
@@ -120,7 +120,7 @@ class CalendarSlotFinder:
                     title = entry.get('summary', 'GCal event')
                     return TimeSlot(start_dt, end_dt, title)
         except Exception as e:
-            print(f"Warning: Error parsing gcal entry: {e}")
+            pass  # Skip silently for cleaner output
         return None
     
     def load_calendar_data(self, org_files: List[str], gcal_file: Optional[str] = None):
@@ -129,7 +129,7 @@ class CalendarSlotFinder:
         for org_file in org_files:
             slots = self.parse_org_file(org_file)
             self.busy_slots.extend(slots)
-            print(f"Loaded {len(slots)} entries from {org_file}")
+            # print(f"Loaded {len(slots)} entries from {org_file}")
         
         # Load gcal data if available
         if gcal_file and Path(gcal_file).exists():
@@ -274,19 +274,16 @@ def load_config_from_file(config_file: str) -> CalendarSlotFinder:
                     datetime.datetime.strptime(start_time_str, "%H:%M").time(),
                     datetime.datetime.strptime(end_time_str, "%H:%M").time()
                 )
-                print(f"Set working hours: {start_time_str} - {end_time_str}")
             except ValueError as e:
-                print(f"Warning: Invalid working hours format: {e}")
+                print(f"⚠️  Invalid working hours format: {e}")
         
         # Set minimum slot duration
         if 'min_slot_duration' in config:
             finder.min_slot_duration = int(config['min_slot_duration'])
-            print(f"Set minimum slot duration: {finder.min_slot_duration} minutes")
         
         # Set meeting cushion
         if 'meeting_cushion' in config:
             finder.meeting_cushion = int(config['meeting_cushion'])
-            print(f"Set meeting cushion: {finder.meeting_cushion} minutes")
         
         # Add restrictions
         if 'restrictions' in config and isinstance(config['restrictions'], list):
@@ -303,16 +300,15 @@ def load_config_from_file(config_file: str) -> CalendarSlotFinder:
                         
                         restriction = WeeklyRestriction(days, start_time, end_time, description)
                         finder.add_restriction(restriction)
-                        print(f"Added restriction: {description} on days {days} from {start_time_str} to {end_time_str}")
                     else:
-                        print(f"Warning: Incomplete restriction data: {restriction_data}")
+                        print(f"⚠️  Incomplete restriction data: {restriction_data}")
                         
                 except (ValueError, KeyError) as e:
-                    print(f"Warning: Error parsing restriction: {e}")
+                    print(f"⚠️  Error parsing restriction: {e}")
         
     except (FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"Warning: Could not load config file {config_file}: {e}")
-        print("Using default configuration")
+        print(f"⚠️  Could not load config file {config_file}: {e}")
+        print("   Using default configuration")
     
     return finder
 
@@ -419,46 +415,62 @@ def main():
                 org_files.append(str(expanded_path))
     
     # Load calendar data
-    print(f"\n=== Loading Calendar Data ===")
+    # print(f"\n=== Loading Calendar Data ===")
     finder.load_calendar_data(org_files, args.gcal_file)
     
     # Calculate date range
     today = datetime.date.today()
     week_start = today + datetime.timedelta(days=(7 * args.week_offset) - today.weekday())
     week_end = week_start + datetime.timedelta(days=6)
-    
-    # Find free slots
-    print(f"\n=== Finding Free Slots ===")
-    print(f"Searching week: {week_start} to {week_end}")
-    print(f"Working hours: {finder.working_hours[0]} - {finder.working_hours[1]}")
-    print(f"Minimum slot duration: {finder.min_slot_duration} minutes")
-    print(f"Meeting cushion: {finder.meeting_cushion} minutes")
-    if finder.restrictions:
-        print(f"Active restrictions: {len(finder.restrictions)}")
-        for restriction in finder.restrictions:
-            day_names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-            days_str = ', '.join([day_names[d] for d in restriction.days])
-            print(f"  - {restriction.description}: {days_str} {restriction.start_time}-{restriction.end_time}")
-    else:
-        print("No restrictions active")
-    
+
     free_slots = finder.find_free_slots(week_start, week_end)
-    
-    # Display results
-    print(f"\n=== Results ===")
+
+    # Display results FIRST
+    print(f"=== FREE TIME SLOTS - {week_start.strftime('%A, %B %d')} to {week_end.strftime('%A, %B %d, %Y')} ===")
     if not free_slots:
-        print("No free slots found in the specified period.")
+        print("\n🚫 No free slots found in the specified period.")
+        print("\nTips:")
+        print("   • Try adjusting your working hours")
+        print("   • Reduce minimum slot duration")
+        print("   • Check for conflicting restrictions")
     else:
-        print(f"Found {len(free_slots)} free time slots:")
+        print(f"\n✅ Found {len(free_slots)} available time slots:\n")
         
         current_date = None
         for slot in free_slots:
             if slot.start.date() != current_date:
                 current_date = slot.start.date()
-                print(f"\n{current_date.strftime('%A, %B %d, %Y')}:")
+                print(f"📅 {current_date.strftime('%A, %B %d, %Y')}:")
             
-            print(f"  {slot.start.strftime('%H:%M')} - {slot.end.strftime('%H:%M')} "
+            print(f"   🕐 {slot.start.strftime('%H:%M')} - {slot.end.strftime('%H:%M')} "
                   f"({slot.duration_minutes()} min)")
+    
+    # Then show configuration details
+    print(f"\n" + "="*50)
+    print(f"📊 SEARCH CONFIGURATION")
+    print(f"="*50)
+    print(f"🗓️  Search period: {week_start.strftime('%a %m/%d')} - {week_end.strftime('%a %m/%d/%Y')}")
+    print(f"⏰ Working hours: {finder.working_hours[0]} - {finder.working_hours[1]}")
+    print(f"⌛ Minimum slot: {finder.min_slot_duration} minutes")
+    print(f"🛡️  Meeting buffer: {finder.meeting_cushion} minutes")
+    
+    if finder.restrictions:
+        print(f"🚫 Active restrictions ({len(finder.restrictions)}):")
+        for restriction in finder.restrictions:
+            day_names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+            days_str = ', '.join([day_names[d] for d in restriction.days])
+            print(f"   • {restriction.description}: {days_str} {restriction.start_time}-{restriction.end_time}")
+    else:
+        print("🚫 No restrictions active")
+    
+    # Show data sources
+    print(f"\n📁 DATA SOURCES")
+    print(f"{'='*20}")
+    total_entries = len(finder.busy_slots)
+    if total_entries > 0:
+        print(f"📋 Processed {total_entries} calendar entries")
+    else:
+        print("📋 No calendar entries found")
 
 if __name__ == "__main__":
     main()

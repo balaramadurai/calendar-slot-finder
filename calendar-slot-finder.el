@@ -1,7 +1,9 @@
-(defcustom csf-min-slot-duration 60
-  "Minimum duration for a free slot in minutes."
-  :type 'integer
-  :group 'calendar-slot-finder);;; calendar-slot-finder.el --- Find empty time slots in your calendar -*- lexical-binding: t; -*-
+;; (defun csf-test-keys ()
+;;   "Test function to verify keybindings work."
+;;   (interactive)
+;;   (message "Test key pressed! Mode: %s, Keymap: %s" major-mode (current-local-map)))
+
+;;; calendar-slot-finder.el --- Find empty time slots in your calendar -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2025
 
@@ -49,6 +51,11 @@ If nil, will try to extract from org-gcal cache."
   :type '(list string string)
   :group 'calendar-slot-finder)
 
+(defcustom csf-min-slot-duration 60
+  "Minimum duration for a free slot in minutes."
+  :type 'integer
+  :group 'calendar-slot-finder)
+
 (defcustom csf-meeting-cushion 15
   "Buffer time in minutes to add before and after existing meetings.
 This ensures you have transition time between appointments."
@@ -63,6 +70,157 @@ Each restriction is a plist with keys:
   :end-time - end time as HH:MM string
   :description - human readable description")
 
+(defvar csf-current-week-offset 1
+  "Current week offset being displayed in the results buffer.")
+
+(defvar csf-last-search-params nil
+  "Parameters from the last search for navigation purposes.
+Format: (org-files gcal-file interactive-p)")
+
+(defvar csf-last-interactive-setup nil
+  "Whether the last search used interactive setup.")
+
+;;;###autoload
+(defun csf-test-buffer ()
+  "Create a test buffer to verify keybindings work."
+  (interactive)
+  (let ((buf (get-buffer-create "*CSF Test*")))
+    (with-current-buffer buf
+      (erase-buffer)
+      (insert "=== Calendar Slot Finder Test Buffer ===\n\n")
+      (insert "Press keys to test:\n")
+      (insert "n - should call csf-next-week\n")
+      (insert "p - should call csf-previous-week\n") 
+      (insert "? - should show help\n")
+      (insert "t - should show test message\n")
+      (insert "q - should quit\n\n")
+      (csf-results-mode)
+      (setq buffer-read-only t)
+      (goto-char (point-min)))
+    (display-buffer buf)
+    (switch-to-buffer buf)
+    (message "Test buffer created. Try pressing n, p, ?, t, or q")))
+
+;; Make sure to undefine any previous version
+(when (fboundp 'csf-results-mode)
+  (fmakunbound 'csf-results-mode))
+
+;; Create the keymap directly without defvar first
+(setq csf-results-mode-map (make-sparse-keymap))
+(define-key csf-results-mode-map "q" 'quit-window)
+(define-key csf-results-mode-map "n" 'csf-next-week)
+(define-key csf-results-mode-map "p" 'csf-previous-week)
+(define-key csf-results-mode-map "r" 'csf-refresh-current-week)
+(define-key csf-results-mode-map "g" 'csf-goto-week)
+(define-key csf-results-mode-map "?" 'csf-help)
+(define-key csf-results-mode-map "t" 'csf-test-keys)
+
+;; Test the keymap creation
+(message "Keymap created: %s" csf-results-mode-map)
+(message "Test lookup 'n': %s" (lookup-key csf-results-mode-map "n"))
+
+(define-derived-mode csf-results-mode fundamental-mode "Calendar-Slots"
+  "Major mode for Calendar Slot Finder results buffer."
+  ;; Create a fresh keymap each time if needed
+  (unless csf-results-mode-map
+    (setq csf-results-mode-map (make-sparse-keymap))
+    (define-key csf-results-mode-map "q" 'quit-window)
+    (define-key csf-results-mode-map "n" 'csf-next-week)
+    (define-key csf-results-mode-map "p" 'csf-previous-week)
+    (define-key csf-results-mode-map "r" 'csf-refresh-current-week)
+    (define-key csf-results-mode-map "g" 'csf-goto-week)
+    (define-key csf-results-mode-map "?" 'csf-help)
+    (define-key csf-results-mode-map "t" 'csf-test-keys))
+  
+  ;; Explicitly set the keymap
+  (setq-local buffer-read-only nil)  ; Temporarily make it writable for setup
+  (use-local-map csf-results-mode-map)
+  (setq-local buffer-read-only t)
+  (setq-local truncate-lines nil))
+
+;; Navigation functions
+(defun csf-next-week ()
+  "Show calendar slots for the next week."
+  (interactive)
+  (message "Next week function called")
+  (if csf-last-search-params
+      (progn
+        (setq csf-current-week-offset (1+ csf-current-week-offset))
+        (message "Moving to week offset: %d" csf-current-week-offset)
+        (csf--refresh-with-current-params))
+    (message "No search parameters available. Run csf-find-slots first.")))
+
+(defun csf-previous-week ()
+  "Show calendar slots for the previous week."
+  (interactive)
+  (message "Previous week function called")
+  (if csf-last-search-params
+      (progn
+        (setq csf-current-week-offset (1- csf-current-week-offset))
+        (message "Moving to week offset: %d" csf-current-week-offset)
+        (csf--refresh-with-current-params))
+    (message "No search parameters available. Run csf-find-slots first.")))
+
+(defun csf-refresh-current-week ()
+  "Refresh the current week's calendar slots."
+  (interactive)
+  (message "Refresh function called")
+  (if csf-last-search-params
+      (progn
+        (message "Refreshing week offset: %d" csf-current-week-offset)
+        (csf--refresh-with-current-params))
+    (message "No search parameters available. Run csf-find-slots first.")))
+
+(defun csf-goto-week (offset)
+  "Go to a specific week offset."
+  (interactive "nWeek offset (0=current, 1=next, -1=previous): ")
+  (message "Goto week function called with offset: %d" offset)
+  (if csf-last-search-params
+      (progn
+        (setq csf-current-week-offset offset)
+        (message "Moving to week offset: %d" csf-current-week-offset)
+        (csf--refresh-with-current-params))
+    (message "No search parameters available. Run csf-find-slots first.")))
+
+(defun csf-help ()
+  "Show help for Calendar Slot Finder results buffer."
+  (interactive)
+  (let ((help-text "Calendar Slot Finder Navigation:
+
+n - Next week
+p - Previous week  
+r - Refresh current week
+g - Go to specific week
+q - Quit buffer
+? - Show this help
+
+Current mode: %s
+Current keymap: %s"))
+    (message help-text major-mode (current-local-map))))
+
+(defun csf--refresh-with-current-params ()
+  "Refresh the results buffer with current parameters."
+  (message "Refresh called. Search params: %s" csf-last-search-params)
+  (if csf-last-search-params
+      (let ((org-files (nth 0 csf-last-search-params))
+            (gcal-file (nth 1 csf-last-search-params))
+            (interactive-p (nth 2 csf-last-search-params)))
+        (message "Calling Python script with offset: %d" csf-current-week-offset)
+        ;; Don't re-run interactive setup on refresh, just use stored config
+        (csf--run-python-script csf-current-week-offset org-files gcal-file nil))
+    (message "No search parameters available")))
+
+(defun csf--get-week-description (offset)
+  "Get a human-readable description of the week offset."
+  (cond
+   ((= offset 0) "Current week")
+   ((= offset 1) "Next week") 
+   ((= offset -1) "Previous week")
+   ((> offset 1) (format "%d weeks from now" offset))
+   ((< offset -1) (format "%d weeks ago" (- offset)))
+   (t (format "Week offset %d" offset))))
+
+;; Core functions
 (defun csf--get-python-script-path ()
   "Get the path to the Python script."
   (or csf-python-script-path
@@ -234,6 +392,11 @@ INPUT can be like 'mon,tue,wed' or '0,1,2' or 'weekdays' or 'weekend'."
                      "--week-offset" (number-to-string week-offset)
                      "--config-file" config-file)))
     
+    ;; Store parameters for navigation
+    (setq csf-last-search-params (list org-files gcal-file interactive-p))
+    (setq csf-current-week-offset week-offset)
+    (setq csf-last-interactive-setup interactive-p)
+    
     ;; Add org files
     (when org-files
       (setq args (append args (cons "--org-files" org-files))))
@@ -250,10 +413,24 @@ INPUT can be like 'mon,tue,wed' or '0,1,2' or 'weekdays' or 'weekend'."
     (message "Running: %s %s" python-cmd (string-join args " "))
     (message "Config file: %s" config-file)
     
-    ;; Run the script
+    ;; Get or create the output buffer
     (let ((output-buffer (get-buffer-create "*Calendar Slot Finder*")))
-      (with-current-buffer output-buffer
+      ;; Switch to the buffer first
+      (switch-to-buffer output-buffer)
+      
+      ;; Clear and set up the buffer
+      (let ((inhibit-read-only t))
         (erase-buffer)
+        ;; Add header with navigation info
+        (insert (propertize 
+                 (format "=== Calendar Slot Finder - %s ===\n" 
+                         (csf--get-week-description week-offset))
+                 'face 'bold))
+        (insert (propertize 
+                 "Navigation: n=next week, p=previous week, g=goto week, r=refresh, q=quit, ?=help\n\n"
+                 'face 'italic))
+        
+        ;; Run the Python script and capture output
         (let ((exit-code (apply #'call-process python-cmd nil t nil args)))
           ;; Clean up config file
           (when (file-exists-p config-file)
@@ -261,21 +438,28 @@ INPUT can be like 'mon,tue,wed' or '0,1,2' or 'weekdays' or 'weekend'."
           
           (if (= exit-code 0)
               (progn
+                ;; Disable read-only temporarily for mode setup
+                (setq buffer-read-only nil)
+                
+                ;; Set up the mode and keymap AFTER content is ready
+                (csf-results-mode)
+                
+                ;; Verify and debug the keymap
+                (message "Mode set. Keymap var: %s" csf-results-mode-map)
+                (message "Current local map: %s" (current-local-map))
+                (message "Lookup 'n' in keymap var: %s" (and csf-results-mode-map (lookup-key csf-results-mode-map "n")))
+                (message "Lookup 'n' in current map: %s" (lookup-key (current-local-map) "n"))
+                
+                ;; Force apply keymap if it's not working
+                (when (and csf-results-mode-map (not (lookup-key (current-local-map) "n")))
+                  (use-local-map csf-results-mode-map)
+                  (message "Forced keymap application. Now 'n' bound to: %s" (lookup-key (current-local-map) "n")))
+                
                 (goto-char (point-min))
-                (display-buffer output-buffer)
-                (message "Calendar slot search completed. See results in *Calendar Slot Finder* buffer."))
-            (error "Python script failed with exit code %d. See *Calendar Slot Finder* buffer for details" exit-code)))))))
+                (message "Calendar slot search completed. Press n/p to navigate, q to quit."))
+            (error "Python script failed with exit code %d. See buffer for details" exit-code)))))))
 
-;;;###autoload
-(defun csf-set-meeting-cushion (minutes)
-  "Set the meeting cushion to MINUTES.
-This adds buffer time before and after each meeting to account for
-transition time, preparation, or overruns."
-  (interactive
-   (list (read-number "Meeting cushion in minutes: " csf-meeting-cushion)))
-  (setq csf-meeting-cushion minutes)
-  (message "Meeting cushion set to %d minutes" minutes))
-
+;; Interactive commands
 ;;;###autoload
 (defun csf-find-slots (&optional week-offset interactive-setup)
   "Find empty calendar slots for the specified week.
@@ -286,10 +470,21 @@ If INTERACTIVE-SETUP is non-nil, run interactive configuration first.
 The function integrates with org-agenda-files and org-gcal entries
 to find free time slots based on your restrictions."
   (interactive
-   (list (if current-prefix-arg
-             (read-number "Week offset (0=current, 1=next): " csf-default-week-offset)
-           csf-default-week-offset)
-         (y-or-n-p "Run interactive setup? ")))
+   (let* ((use-prefix (not (null current-prefix-arg)))
+          (week-choice (if use-prefix
+                          (completing-read "Which week? " 
+                                         '("Current week (0)" "Next week (1)" "Previous week (-1)" "Custom...") 
+                                         nil nil nil nil "Next week (1)")
+                        "Next week (1)"))
+          (week-offset (cond
+                       ((string-match "Current week" week-choice) 0)
+                       ((string-match "Next week" week-choice) 1) 
+                       ((string-match "Previous week" week-choice) -1)
+                       ((string-match "Custom" week-choice) 
+                        (read-number "Week offset (0=current, 1=next, -1=previous): " csf-default-week-offset))
+                       (t csf-default-week-offset)))
+          (interactive-setup (y-or-n-p "Run interactive setup? ")))
+     (list week-offset interactive-setup)))
   
   (let ((script-path (csf--get-python-script-path)))
     (unless (file-exists-p script-path)
@@ -319,6 +514,16 @@ to find free time slots based on your restrictions."
                               interactive-setup))))
 
 ;;;###autoload
+(defun csf-set-meeting-cushion (minutes)
+  "Set the meeting cushion to MINUTES.
+This adds buffer time before and after each meeting to account for
+transition time, preparation, or overruns."
+  (interactive
+   (list (read-number "Meeting cushion in minutes: " csf-meeting-cushion)))
+  (setq csf-meeting-cushion minutes)
+  (message "Meeting cushion set to %d minutes" minutes))
+
+;;;###autoload
 (defun csf-find-slots-quick ()
   "Quickly find empty calendar slots for next week using current settings."
   (interactive)
@@ -343,14 +548,14 @@ to find free time slots based on your restrictions."
   (interactive)
   (csf-find-slots 1))
 
-;; Add to org-mode menu if available
-(when (featurep 'org)
+;; Integration with org-mode
+(with-eval-after-load 'org
   (define-key org-mode-map (kbd "C-c C-x s") 'csf-find-slots)
   
   ;; Add to org agenda dispatcher if available
   (when (boundp 'org-agenda-custom-commands)
     (add-to-list 'org-agenda-custom-commands
-                 '("s" "Find empty slots" csf-find-slots))))
+                 '("s" "Find empty slots" csf-find-slots) t)))
 
 (provide 'calendar-slot-finder)
 
