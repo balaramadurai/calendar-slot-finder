@@ -375,6 +375,12 @@ def interactive_setup() -> CalendarSlotFinder:
     
     return finder
 
+def print_boxed_header(text, padding=2):
+    total_width = len(text) + (padding * 2)
+    print(f"{' '}{'━' * total_width}")
+    print(f"┃{' ' * padding}{text}{' ' * padding}┃")
+    print(f"{' '}{'━' * total_width}")
+
 def main():
     parser = argparse.ArgumentParser(description='Find empty calendar slots')
     parser.add_argument('--week-offset', type=int, default=1, 
@@ -426,7 +432,9 @@ def main():
     free_slots = finder.find_free_slots(week_start, week_end)
 
     # Display results FIRST
-    print(f"=== FREE TIME SLOTS - {week_start.strftime('%A, %B %d')} to {week_end.strftime('%A, %B %d, %Y')} ===")
+
+    print_boxed_header(f"FREE TIME SLOTS - {week_start.strftime('%A, %B %d')} to {week_end.strftime('%A, %B %d, %Y')}")
+
     if not free_slots:
         print("\n🚫 No free slots found in the specified period.")
         print("\nTips:")
@@ -446,9 +454,7 @@ def main():
                   f"({slot.duration_minutes()} min)")
     
     # Then show configuration details
-    print(f"\n" + "="*50)
-    print(f"📊 SEARCH CONFIGURATION")
-    print(f"="*50)
+    print_boxed_header(f"📊 SEARCH CONFIGURATION")
     print(f"🗓️  Search period: {week_start.strftime('%a %m/%d')} - {week_end.strftime('%a %m/%d/%Y')}")
     print(f"⏰ Working hours: {finder.working_hours[0]} - {finder.working_hours[1]}")
     print(f"⌛ Minimum slot: {finder.min_slot_duration} minutes")
@@ -464,8 +470,7 @@ def main():
         print("🚫 No restrictions active")
     
     # Show data sources
-    print(f"\n📁 DATA SOURCES")
-    print(f"{'='*20}")
+    print_boxed_header(f"📁 DATA SOURCES")
     total_entries = len(finder.busy_slots)
     if total_entries > 0:
         print(f"📋 Processed {total_entries} calendar entries")
