@@ -1,0 +1,313 @@
+*** Custom working hours
+:PROPERTIES:
+:CUSTOM_ID: custom-working-hours
+:END:
+#+begin_src elisp
+;; Example: Part-time schedule
+(setq csf-working-hours '("10:00" "15:00"))
+(setq csf-min-slot-duration 30)  ; 30-minute minimum slots
+#+end_src
+
+** How Meeting Cushions Work
+:PROPERTIES:
+:CUSTOM_ID: how-meeting-cushions-work
+:END:
+When you have a meeting from 2:00-3:00 PM with a 15-minute cushion:
+
+*Without cushion:*
+
+#+begin_example
+1:30-2:00   Available
+2:00-3:00   Meeting  
+3:00-3:30   Available
+#+end_example
+
+*With 15-minute cushion:*
+
+#+begin_example
+1:30-1:45   Available
+1:45-3:15   Busy (meeting + buffers)
+3:15-3:30   Available
+#+end_example
+
+This prevents back-to-back scheduling and gives you breathing room!# Calendar Slot Finder
+
+An interactive tool to find empty time slots in your calendar by integrating with org-agenda-files and org-gcal entries.
+
+** Features
+:PROPERTIES:
+:CUSTOM_ID: features
+:END:
+- 🗓️ Integrates with org-mode agenda files
+- 📅 Supports org-gcal Google Calendar integration
+- ⚙️ Interactive configuration for working hours and restrictions
+- 🔄 Weekly recurring restrictions (e.g., meeting hours)
+- 🛡️ Meeting cushion/buffer time (customizable, default 15 minutes)
+- 📊 Smart conflict detection and free slot identification
+- 🎯 Configurable minimum slot duration
+- 📋 Clean output with duration information
+
+** Installation
+:PROPERTIES:
+:CUSTOM_ID: installation
+:END:
+1. *Save the Python script* as =calendar_slot_finder.py= in your preferred directory
+2. *Save the Elisp file* as =calendar-slot-finder.el= in your Emacs configuration directory
+3. *Add to your Emacs configuration*:
+
+#+begin_src elisp
+;; Add to your init.el or .emacs
+(add-to-list 'load-path "/path/to/your/elisp/files")
+(require 'calendar-slot-finder)
+
+;; Optional: Configure default settings
+(setq csf-python-script-path "/path/to/calendar_slot_finder.py")
+(setq csf-default-week-offset 1)  ; 1 = next week
+(setq csf-working-hours '("09:00" "17:00"))
+(setq csf-min-slot-duration 60)  ; minutes
+(setq csf-meeting-cushion 15)    ; buffer time before/after meetings
+#+end_src
+
+** Usage
+:PROPERTIES:
+:CUSTOM_ID: usage
+:END:
+*** Interactive Mode (Recommended for first use)
+:PROPERTIES:
+:CUSTOM_ID: interactive-mode-recommended-for-first-use
+:END:
+#+begin_src elisp
+M-x csf-find-slots
+#+end_src
+
+This will: 1. Prompt for week offset (default: next week) 2. Ask if you want interactive setup 3. If yes, guide you through configuring: - Working hours - Minimum slot duration - Weekly restrictions (e.g., "Team meetings 2:30-5:30 PM weekdays")
+
+*** Quick Commands
+:PROPERTIES:
+:CUSTOM_ID: quick-commands
+:END:
+- =M-x csf-find-slots-quick= - Use current settings for next week
+- =M-x csf-find-slots-this-week= - Search current week
+- =M-x csf-find-slots-next-week= - Search next week
+- =M-x csf-setup-restrictions= - Configure restrictions only
+- =M-x csf-set-meeting-cushion= - Set buffer time around meetings
+
+*** Keybindings
+:PROPERTIES:
+:CUSTOM_ID: keybindings
+:END:
+In org-mode buffers: =C-c C-x s= runs =csf-find-slots=
+
+** Configuration Examples
+:PROPERTIES:
+:CUSTOM_ID: configuration-examples
+:END:
+*** Setting up recurring meeting hours
+:PROPERTIES:
+:CUSTOM_ID: setting-up-recurring-meeting-hours
+:END:
+#+begin_src elisp
+;; Example: Block team meeting time every weekday 2:30-5:30 PM
+(setq csf-weekly-restrictions
+      '((:days (0 1 2 3 4)  ; Monday-Friday
+         :start-time "14:30"
+         :end-time "17:30"
+         :description "Team meeting hours")))
+#+end_src
+
+*** Meeting Cushion
+:PROPERTIES:
+:CUSTOM_ID: meeting-cushion
+:END:
+#+begin_src elisp
+;; Set 20 minutes buffer before/after each meeting
+(setq csf-meeting-cushion 20)
+
+;; Or interactively
+M-x csf-set-meeting-cushion
+#+end_src
+
+This feature automatically adds buffer time before and after each meeting/appointment to account for: - Transition time between locations - Meeting preparation time\\
+- Potential meeting overruns - Mental breaks between appointments
+
+*Example*: If you have a meeting from 2:00-3:00 PM with a 15-minute cushion, the system will treat it as busy from 1:45-3:15 PM, ensuring you get adequate transition time.
+
+** Command Line Usage
+:PROPERTIES:
+:CUSTOM_ID: command-line-usage
+:END:
+You can also run the Python script directly:
+
+#+begin_src sh
+# Basic usage - next week with interactive setup
+python3 calendar_slot_finder.py
+
+# Quick usage with example restrictions
+python3 calendar_slot_finder.py --non-interactive --week-offset 1
+
+# Specify org files and gcal data
+python3 calendar_slot_finder.py \
+  --org-files ~/org/agenda.org ~/org/work.org \
+  --gcal-file ~/org/gcal-data.json \
+  --week-offset 0
+#+end_src
+
+** Interactive Setup Examples
+:PROPERTIES:
+:CUSTOM_ID: interactive-setup-examples
+:END:
+When you run the interactive setup, you'll be prompted for:
+
+*** Working Hours
+:PROPERTIES:
+:CUSTOM_ID: working-hours
+:END:
+#+begin_example
+Set your working hours (default: 9:00-17:00)
+Start hour (HH:MM, default 09:00): 08:30
+End hour (HH:MM, default 17:00): 18:00
+#+end_example
+
+*** Weekly Restrictions
+:PROPERTIES:
+:CUSTOM_ID: weekly-restrictions
+:END:
+#+begin_example
+Add a weekly restriction? (y/n): y
+Description (e.g., 'Team meeting hours'): Team standup
+Days (0=Monday, 1=Tuesday, ..., 6=Sunday)
+Enter day numbers separated by commas (e.g., 0,1,2,3,4 for weekdays): 0,1,2,3,4
+Start time (HH:MM): 14:30
+End time (HH:MM): 17:30
+#+end_example
+
+You can also use shortcuts: - Days: =weekdays= = Mon-Fri, =weekend= = Sat-Sun - Days: =mon,wed,fri= = specific days by name
+
+** Org-mode Integration
+:PROPERTIES:
+:CUSTOM_ID: org-mode-integration
+:END:
+*** Supported Org Timestamp Formats
+:PROPERTIES:
+:CUSTOM_ID: supported-org-timestamp-formats
+:END:
+The tool recognizes various org-mode timestamp formats:
+
+#+begin_src org
+* Meeting with client
+  SCHEDULED: <2025-09-22 Mon 14:00-15:30>
+
+* Project deadline
+  DEADLINE: <2025-09-25 Thu 17:00>
+
+* Conference call
+  <2025-09-23 Tue 10:00-11:00>
+
+* All-day event
+  [2025-09-24 Wed]
+#+end_src
+
+*** org-gcal Integration
+:PROPERTIES:
+:CUSTOM_ID: org-gcal-integration
+:END:
+If you use org-gcal, the tool will automatically: 1. Detect your org-gcal configuration 2. Extract calendar events from your org-gcal files 3. Include them in the conflict detection
+
+** Sample Output
+:PROPERTIES:
+:CUSTOM_ID: sample-output
+:END:
+#+begin_example
+=== Loading Calendar Data ===
+Loaded 5 entries from /home/user/org/agenda.org
+Loaded 12 entries from /home/user/org/work.org
+Loaded Google Calendar entries from /tmp/org-gcal-data.json
+
+=== Finding Free Slots ===
+Searching week: 2025-09-22 to 2025-09-28
+
+=== Results ===
+Found 8 free time slots:
+
+Monday, September 22, 2025:
+  09:00 - 10:30 (90 min)
+  11:00 - 12:00 (60 min)
+
+Tuesday, September 23, 2025:
+  08:30 - 09:45 (75 min)
+  15:30 - 17:00 (90 min)
+
+Wednesday, September 24, 2025:
+  09:00 - 14:30 (330 min)
+
+Thursday, September 25, 2025:
+  10:00 - 12:00 (120 min)
+  13:00 - 14:30 (90 min)
+
+Friday, September 26, 2025:
+  09:00 - 11:00 (120 min)
+#+end_example
+
+** Troubleshooting
+:PROPERTIES:
+:CUSTOM_ID: troubleshooting
+:END:
+*** Python script not found
+:PROPERTIES:
+:CUSTOM_ID: python-script-not-found
+:END:
+#+begin_src elisp
+(setq csf-python-script-path "/full/path/to/calendar_slot_finder.py")
+#+end_src
+
+*** No org files detected
+:PROPERTIES:
+:CUSTOM_ID: no-org-files-detected
+:END:
+The tool automatically looks for: - =org-agenda-files= variable - Common paths: =~/org/agenda.org=, =~/org/schedule.org=, =~/org/tasks.org=
+
+You can specify manually:
+
+#+begin_src elisp
+(setq org-agenda-files '("/path/to/your/agenda.org" "/path/to/work.org"))
+#+end_src
+
+*** org-gcal not working
+:PROPERTIES:
+:CUSTOM_ID: org-gcal-not-working
+:END:
+Make sure org-gcal is properly configured and has fetched recent data:
+
+#+begin_src elisp
+M-x org-gcal-fetch
+#+end_src
+
+** Dependencies
+:PROPERTIES:
+:CUSTOM_ID: dependencies
+:END:
+- *Python 3.6+* (with standard library modules)
+- *Emacs 26.1+* with org-mode
+- *Optional*: org-gcal for Google Calendar integration
+
+** Customization
+:PROPERTIES:
+:CUSTOM_ID: customization
+:END:
+All settings can be customized through Emacs customize system:
+
+#+begin_src elisp
+M-x customize-group RET calendar-slot-finder RET
+#+end_src
+
+** Contributing
+:PROPERTIES:
+:CUSTOM_ID: contributing
+:END:
+The tool is designed to be easily extensible. You can: - Add new calendar backends by modifying the Python script - Extend the org-mode parsing for additional timestamp formats - Add new restriction types (e.g., location-based) - Implement additional output formats
+
+** License
+:PROPERTIES:
+:CUSTOM_ID: license
+:END:
+This tool is provided as-is for personal and educational use.
