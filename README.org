@@ -1,36 +1,4 @@
-*** Custom working hours
-:PROPERTIES:
-:CUSTOM_ID: custom-working-hours
-:END:
-#+begin_src elisp
-;; Example: Part-time schedule
-(setq csf-working-hours '("10:00" "15:00"))
-(setq csf-min-slot-duration 30)  ; 30-minute minimum slots
-#+end_src
-
-** How Meeting Cushions Work
-:PROPERTIES:
-:CUSTOM_ID: how-meeting-cushions-work
-:END:
-When you have a meeting from 2:00-3:00 PM with a 15-minute cushion:
-
-*Without cushion:*
-
-#+begin_example
-1:30-2:00   Available
-2:00-3:00   Meeting  
-3:00-3:30   Available
-#+end_example
-
-*With 15-minute cushion:*
-
-#+begin_example
-1:30-1:45   Available
-1:45-3:15   Busy (meeting + buffers)
-3:15-3:30   Available
-#+end_example
-
-This prevents back-to-back scheduling and gives you breathing room!# Calendar Slot Finder
+# Calendar Slot Finder
 
 An interactive tool to find empty time slots in your calendar by integrating with org-agenda-files and org-gcal entries.
 
@@ -46,6 +14,8 @@ An interactive tool to find empty time slots in your calendar by integrating wit
 - 📊 Smart conflict detection and free slot identification
 - 🎯 Configurable minimum slot duration
 - 📋 Clean output with duration information
+- 📧 **NEW: One-press email suggestion with clipboard copy**
+- 📝 **NEW: Automatic org entry creation in inbox**
 
 ** Installation
 :PROPERTIES:
@@ -66,21 +36,76 @@ An interactive tool to find empty time slots in your calendar by integrating wit
 (setq csf-working-hours '("09:00" "17:00"))
 (setq csf-min-slot-duration 60)  ; minutes
 (setq csf-meeting-cushion 15)    ; buffer time before/after meetings
+(setq csf-inbox-file "~/Documents/0Inbox/index.org")  ; where to create meetings
 #+end_src
 
 ** Usage
 :PROPERTIES:
 :CUSTOM_ID: usage
 :END:
-*** Interactive Mode (Recommended for first use)
+
+*** Quick Workflow (Recommended)
 :PROPERTIES:
-:CUSTOM_ID: interactive-mode-recommended-for-first-use
+:CUSTOM_ID: quick-workflow-recommended
+:END:
+
+1. *Find free slots*
+   #+begin_src elisp
+   M-x csf-find-slots-next-week
+   #+end_src
+
+2. *Review results* - Shows all available slots with indices [0], [1], etc.
+
+3. *Press ~c~* - Copy email suggestion and create org entries
+
+4. *Follow the prompts*
+   - Select first slot index (e.g., 1)
+   - Select second slot index (e.g., 3)
+   - Enter meeting duration (press Enter for default 30 minutes)
+   - Enter who the meeting is with (name, team, or organization)
+
+5. *Results*
+   - ✅ Email suggestion copied to clipboard
+   - ✅ Two tentative meeting entries created in your inbox org file
+   - 📧 Paste email: =C-y=
+   - 📝 Review org entries in =~/Documents/0Inbox/index.org=
+
+*** Sample Output
+:PROPERTIES:
+:CUSTOM_ID: sample-output
+:END:
+
+*Your Email Suggestion (copied to clipboard):*
+#+begin_example
+May I suggest a meeting of 30 minutes on either
+
+Wed, Nov 05, 2025, 02:30pm
+
+or
+
+Thu, Nov 06, 2025, 02:30pm?
+
+If you are not available, please feel free to suggest another time based on your convenience.
+#+end_example
+
+*Your Org Entries (added to inbox):*
+#+begin_src org
+* Tentative Meeting with Marketing Team
+SCHEDULED: <2025-11-05 Wed 14:30-15:00>
+
+* Tentative Meeting with Marketing Team
+SCHEDULED: <2025-11-06 Thu 14:30-15:00>
+#+end_src
+
+*** Interactive Mode
+:PROPERTIES:
+:CUSTOM_ID: interactive-mode
 :END:
 #+begin_src elisp
 M-x csf-find-slots
 #+end_src
 
-This will: 1. Prompt for week offset (default: next week) 2. Ask if you want interactive setup 3. If yes, guide you through configuring: - Working hours - Minimum slot duration - Weekly restrictions (e.g., "Team meetings 2:30-5:30 PM weekdays")
+This will prompt for week offset and interactive setup.
 
 *** Quick Commands
 :PROPERTIES:
@@ -96,18 +121,30 @@ This will: 1. Prompt for week offset (default: next week) 2. Ask if you want int
 :PROPERTIES:
 :CUSTOM_ID: keybindings
 :END:
-In org-mode buffers: =C-c C-x s= runs =csf-find-slots=
+- =C-c C-x s= - Run =csf-find-slots= in org-mode buffers
+
+*In results buffer:*
+| Key | Action |
+|-----+--------|
+| =c= | Copy email suggestion + create org entries |
+| =n= | Next week |
+| =p= | Previous week |
+| =r= | Refresh |
+| =g= | Go to specific week |
+| =?= | Help |
+| =q= | Quit |
 
 ** Configuration Examples
 :PROPERTIES:
 :CUSTOM_ID: configuration-examples
 :END:
+
 *** Setting up recurring meeting hours
 :PROPERTIES:
 :CUSTOM_ID: setting-up-recurring-meeting-hours
 :END:
 #+begin_src elisp
-;; Example: Block team meeting time every weekday 2:30-5:30 PM
+;; Block team meeting time every weekday 2:30-5:30 PM
 (setq csf-weekly-restrictions
       '((:days (0 1 2 3 4)  ; Monday-Friday
          :start-time "14:30"
@@ -115,22 +152,49 @@ In org-mode buffers: =C-c C-x s= runs =csf-find-slots=
          :description "Team meeting hours")))
 #+end_src
 
-*** Meeting Cushion
+*** Customize working hours
 :PROPERTIES:
-:CUSTOM_ID: meeting-cushion
+:CUSTOM_ID: custom-working-hours
 :END:
 #+begin_src elisp
-;; Set 20 minutes buffer before/after each meeting
-(setq csf-meeting-cushion 20)
-
-;; Or interactively
-M-x csf-set-meeting-cushion
+;; Example: Part-time schedule
+(setq csf-working-hours '("10:00" "15:00"))
+(setq csf-min-slot-duration 30)  ; 30-minute minimum slots
 #+end_src
 
-This feature automatically adds buffer time before and after each meeting/appointment to account for: - Transition time between locations - Meeting preparation time\\
-- Potential meeting overruns - Mental breaks between appointments
+*** Configure inbox location
+:PROPERTIES:
+:CUSTOM_ID: configure-inbox-location
+:END:
+#+begin_src elisp
+;; Change where tentative meetings are stored
+(setq csf-inbox-file "~/org/inbox.org")
+#+end_src
 
-*Example*: If you have a meeting from 2:00-3:00 PM with a 15-minute cushion, the system will treat it as busy from 1:45-3:15 PM, ensuring you get adequate transition time.
+*** Customize default meeting duration
+:PROPERTIES:
+:CUSTOM_ID: customize-meeting-duration
+:END:
+#+begin_src elisp
+;; Default to 45-minute meetings instead of 30
+(setq csf-default-meeting-duration 45)
+#+end_src
+
+** How It Works
+:PROPERTIES:
+:CUSTOM_ID: how-it-works
+:END:
+
+*** The Copy + Create Workflow
+
+When you press =c=:
+
+1. *Email Generation* - Formats the 2 selected slots into a professional email suggestion
+2. *Clipboard Copy* - Automatically copies to your clipboard
+3. *Org Entry Creation* - Prompts for who the meeting is with
+4. *Automatic Insertion* - Creates two tentative meeting entries in your inbox org file
+
+All in one keystroke! ⚡
 
 ** Command Line Usage
 :PROPERTIES:
@@ -152,41 +216,11 @@ python3 calendar_slot_finder.py \
   --week-offset 0
 #+end_src
 
-** Interactive Setup Examples
-:PROPERTIES:
-:CUSTOM_ID: interactive-setup-examples
-:END:
-When you run the interactive setup, you'll be prompted for:
-
-*** Working Hours
-:PROPERTIES:
-:CUSTOM_ID: working-hours
-:END:
-#+begin_example
-Set your working hours (default: 9:00-17:00)
-Start hour (HH:MM, default 09:00): 08:30
-End hour (HH:MM, default 17:00): 18:00
-#+end_example
-
-*** Weekly Restrictions
-:PROPERTIES:
-:CUSTOM_ID: weekly-restrictions
-:END:
-#+begin_example
-Add a weekly restriction? (y/n): y
-Description (e.g., 'Team meeting hours'): Team standup
-Days (0=Monday, 1=Tuesday, ..., 6=Sunday)
-Enter day numbers separated by commas (e.g., 0,1,2,3,4 for weekdays): 0,1,2,3,4
-Start time (HH:MM): 14:30
-End time (HH:MM): 17:30
-#+end_example
-
-You can also use shortcuts: - Days: =weekdays= = Mon-Fri, =weekend= = Sat-Sun - Days: =mon,wed,fri= = specific days by name
-
 ** Org-mode Integration
 :PROPERTIES:
 :CUSTOM_ID: org-mode-integration
 :END:
+
 *** Supported Org Timestamp Formats
 :PROPERTIES:
 :CUSTOM_ID: supported-org-timestamp-formats
@@ -207,51 +241,93 @@ The tool recognizes various org-mode timestamp formats:
   [2025-09-24 Wed]
 #+end_src
 
-*** org-gcal Integration
+*** Automatic Org Entry Creation
 :PROPERTIES:
-:CUSTOM_ID: org-gcal-integration
+:CUSTOM_ID: automatic-org-entry-creation
 :END:
-If you use org-gcal, the tool will automatically: 1. Detect your org-gcal configuration 2. Extract calendar events from your org-gcal files 3. Include them in the conflict detection
 
-** Sample Output
+When you create org entries with the =c= command:
+
+- Tentative meetings are added to your inbox file (=~/Documents/0Inbox/index.org=)
+- Timestamps include both date and time
+- Meeting duration is calculated and added to end time
+- Name of the meeting contact is included in the heading
+- Entries are appended to the end of the inbox file
+
+Example created entries:
+#+begin_src org
+* Tentative Meeting with John Doe
+SCHEDULED: <2025-11-05 Wed 14:30-15:00>
+
+* Tentative Meeting with John Doe
+SCHEDULED: <2025-11-06 Thu 14:30-15:00>
+#+end_src
+
+** Tips & Tricks
 :PROPERTIES:
-:CUSTOM_ID: sample-output
+:CUSTOM_ID: tips-tricks
 :END:
-#+begin_example
-=== Loading Calendar Data ===
-Loaded 5 entries from /home/user/org/agenda.org
-Loaded 12 entries from /home/user/org/work.org
-Loaded Google Calendar entries from /tmp/org-gcal-data.json
 
-=== Finding Free Slots ===
-Searching week: 2025-09-22 to 2025-09-28
+*** Save Time on Email
+:PROPERTIES:
+:CUSTOM_ID: save-time-on-email
+:END:
+Instead of manually formatting:
+- ❌ Copy dates and times manually
+- ❌ Format times (2:30pm vs 14:30)
+- ❌ Type out the full email
 
-=== Results ===
-Found 8 free time slots:
+Simply:
+- ✅ Press =c=
+- ✅ Select 2 slots
+- ✅ Paste =C-y=
 
-Monday, September 22, 2025:
-  09:00 - 10:30 (90 min)
-  11:00 - 12:00 (60 min)
+*Saves 1.5-2.5 minutes per email!*
 
-Tuesday, September 23, 2025:
-  08:30 - 09:45 (75 min)
-  15:30 - 17:00 (90 min)
+*** Organize Your Tentative Meetings
+:PROPERTIES:
+:CUSTOM_ID: organize-your-tentative-meetings
+:END:
+Entries go to your inbox, so you can:
+- Review all tentative meetings in one place
+- Move confirmed meetings to your main org files
+- Track which options you suggested
 
-Wednesday, September 24, 2025:
-  09:00 - 14:30 (330 min)
-
-Thursday, September 25, 2025:
-  10:00 - 12:00 (120 min)
-  13:00 - 14:30 (90 min)
-
-Friday, September 26, 2025:
-  09:00 - 11:00 (120 min)
-#+end_example
+*** Change Meeting Duration On the Fly
+:PROPERTIES:
+:CUSTOM_ID: change-meeting-duration-on-the-fly
+:END:
+No need to reconfigure. When prompted, enter any duration:
+- Default: 30 minutes (press Enter)
+- 45-minute meeting: =45=
+- 1-hour meeting: =60=
 
 ** Troubleshooting
 :PROPERTIES:
 :CUSTOM_ID: troubleshooting
 :END:
+
+*** Org entries not being created
+:PROPERTIES:
+:CUSTOM_ID: org-entries-not-being-created
+:END:
+- Verify =csf-inbox-file= points to a valid org file
+- Make sure the file exists at that location
+- Check file permissions
+
+#+begin_src elisp
+;; Verify your setting
+(message "%s" csf-inbox-file)
+#+end_src
+
+*** Can't find free slots
+:PROPERTIES:
+:CUSTOM_ID: cant-find-free-slots
+:END:
+- Check that calendar entries exist in your org files
+- Try different working hours: =M-x csf-setup-restrictions=
+- Reduce minimum slot duration: =(setq csf-min-slot-duration 30)=
+
 *** Python script not found
 :PROPERTIES:
 :CUSTOM_ID: python-script-not-found
@@ -260,33 +336,18 @@ Friday, September 26, 2025:
 (setq csf-python-script-path "/full/path/to/calendar_slot_finder.py")
 #+end_src
 
-*** No org files detected
+*** Clipboard not working
 :PROPERTIES:
-:CUSTOM_ID: no-org-files-detected
+:CUSTOM_ID: clipboard-not-working
 :END:
-The tool automatically looks for: - =org-agenda-files= variable - Common paths: =~/org/agenda.org=, =~/org/schedule.org=, =~/org/tasks.org=
-
-You can specify manually:
-
-#+begin_src elisp
-(setq org-agenda-files '("/path/to/your/agenda.org" "/path/to/work.org"))
-#+end_src
-
-*** org-gcal not working
-:PROPERTIES:
-:CUSTOM_ID: org-gcal-not-working
-:END:
-Make sure org-gcal is properly configured and has fetched recent data:
-
-#+begin_src elisp
-M-x org-gcal-fetch
-#+end_src
+- Linux: Install =xclip= or =xsel=
+- macOS/Windows: Should work automatically
 
 ** Dependencies
 :PROPERTIES:
 :CUSTOM_ID: dependencies
 :END:
-- *Python 3.6+* (with standard library modules)
+- *Python 3.6+* (with standard library modules only)
 - *Emacs 26.1+* with org-mode
 - *Optional*: org-gcal for Google Calendar integration
 
@@ -294,17 +355,21 @@ M-x org-gcal-fetch
 :PROPERTIES:
 :CUSTOM_ID: customization
 :END:
-All settings can be customized through Emacs customize system:
+All settings can be customized:
 
 #+begin_src elisp
 M-x customize-group RET calendar-slot-finder RET
 #+end_src
 
-** Contributing
-:PROPERTIES:
-:CUSTOM_ID: contributing
-:END:
-The tool is designed to be easily extensible. You can: - Add new calendar backends by modifying the Python script - Extend the org-mode parsing for additional timestamp formats - Add new restriction types (e.g., location-based) - Implement additional output formats
+Or directly in your init file:
+
+#+begin_src elisp
+(setq csf-working-hours '("08:00" "18:00"))
+(setq csf-min-slot-duration 60)
+(setq csf-meeting-cushion 15)
+(setq csf-default-meeting-duration 30)
+(setq csf-inbox-file "~/org/inbox.org")
+#+end_src
 
 ** License
 :PROPERTIES:

@@ -57,6 +57,16 @@ If nil, assumes the script is in the same directory as this file."
   :type 'integer
   :group 'calendar-slot-finder)
 
+(defcustom csf-default-meeting-duration 30
+  "Default meeting duration in minutes for email suggestions."
+  :type 'integer
+  :group 'calendar-slot-finder)
+
+(defcustom csf-inbox-file "~/Documents/0Inbox/index.org"
+  "Path to the inbox org file where tentative meetings are stored."
+  :type 'file
+  :group 'calendar-slot-finder)
+
 ;;; Variables
 
 (defvar csf-weekly-restrictions nil
@@ -68,6 +78,12 @@ If nil, assumes the script is in the same directory as this file."
 (defvar csf-last-search-params nil
   "Parameters from the last search for navigation.")
 
+(defvar csf-free-slots nil
+  "List of free slots from the last search.")
+
+(defvar csf-last-slot-count 0
+  "Number of slots in the last search.")
+
 ;;; Keymap and Mode
 
 (defvar csf-results-mode-map (make-sparse-keymap)
@@ -78,6 +94,7 @@ If nil, assumes the script is in the same directory as this file."
 (define-key csf-results-mode-map "p" 'csf-previous-week)
 (define-key csf-results-mode-map "r" 'csf-refresh-current-week)
 (define-key csf-results-mode-map "g" 'csf-goto-week)
+(define-key csf-results-mode-map "c" 'csf-copy-email-suggestion)
 (define-key csf-results-mode-map "?" 'csf-show-help)
 
 (define-derived-mode csf-results-mode fundamental-mode "Calendar-Slots"
@@ -118,7 +135,163 @@ If nil, assumes the script is in the same directory as this file."
 (defun csf-show-help ()
   "Show help for Calendar Slot Finder."
   (interactive)
-  (message "Calendar Slot Finder: q=quit, n=next week, p=previous week, r=refresh, g=goto week"))
+  (message "Calendar Slot Finder: q=quit, n=next week, p=previous week, r=refresh, g=goto week, c=copy email+org, ?=help"))
+
+;;; Email Suggestion Functions
+
+(defun csf--create-org-timestamp (date-str time-str duration)
+  "Create org timestamp from date, time, and duration.
+DATE-STR: 'Wed, Nov 05, 2025'
+TIME-STR: '2:30pm' or '2:30PM'
+DURATION: meeting duration in minutes
+Returns: '<2025-11-05 Wed 14:30-15:00>'"
+  (let* (;; Parse date: "Wed, Nov 05, 2025"
+         (date-parts (split-string date-str ", "))
+         (day-name (nth 0 date-parts))
+         (month-day-str (nth 1 date-parts))
+         (year (nth 2 date-parts))
+         (month-day-parts (split-string month-day-str))
+         (month-str (nth 0 month-day-parts))
+         (day-num (nth 1 month-day-parts))
+         
+         ;; Convert month to number
+         (month-num (cond
+                     ((string= month-str "Jan") "01") ((string= month-str "Feb") "02")
+                     ((string= month-str "Mar") "03") ((string= month-str "Apr") "04")
+                     ((string= month-str "May") "05") ((string= month-str "Jun") "06")
+                     ((string= month-str "Jul") "07") ((string= month-str "Aug") "08")
+                     ((string= month-str "Sep") "09") ((string= month-str "Oct") "10")
+                     ((string= month-str "Nov") "11") ((string= month-str "Dec") "12")
+                     (t "01")))
+         
+         ;; Parse time: "2:30pm" or "2:30PM" (case-insensitive)
+         (time-lower (downcase time-str))
+         (time-match (string-match "\\([0-9]+\\):\\([0-9]+\\)\\(am\\|pm\\)" time-lower))
+         (hour-str (if time-match (match-string 1 time-lower) "0"))
+         (minute-str (if time-match (match-string 2 time-lower) "0"))
+         (ampm (if time-match (match-string 3 time-lower) "am"))
+         (hour (string-to-number hour-str))
+         (minute (string-to-number minute-str))
+         
+         ;; Convert to 24-hour format
+         (hour-24 (if (string= ampm "pm")
+                      (if (= hour 12) 12 (+ hour 12))
+                    (if (= hour 12) 0 hour)))
+         
+         ;; Calculate end time
+         (total-minutes (+ (* hour-24 60) minute duration))
+         (end-hour (/ total-minutes 60))
+         (end-minute (mod total-minutes 60)))
+    
+    ;; Return org timestamp in correct format
+    (format "<%s-%s-%s %s %02d:%02d-%02d:%02d>" 
+            year month-num day-num day-name
+            hour-24 minute end-hour end-minute)))
+
+(defun csf--create-org-entries (slot1-info slot2-info duration person)
+  "Create tentative meeting entries in inbox org file.
+SLOT1-INFO, SLOT2-INFO: Hash tables with 'date' and 'time' keys
+DURATION: Meeting duration in minutes
+PERSON: Who the meeting is with"
+  (let* ((inbox-path (expand-file-name csf-inbox-file))
+         (slot1-date (gethash "date" slot1-info))
+         (slot1-time (gethash "time" slot1-info))
+         (slot2-date (gethash "date" slot2-info))
+         (slot2-time (gethash "time" slot2-info))
+         (timestamp1 (csf--create-org-timestamp slot1-date slot1-time duration))
+         (timestamp2 (csf--create-org-timestamp slot2-date slot2-time duration)))
+    
+    (if (file-exists-p inbox-path)
+        (with-current-buffer (find-file-noselect inbox-path)
+          (goto-char (point-max))
+          (insert "\n")
+          (insert (format "* Tentative Meeting with %s\n" person))
+          (insert (format "SCHEDULED: %s\n" timestamp1))
+          (insert "\n")
+          (insert (format "* Tentative Meeting with %s\n" person))
+          (insert (format "SCHEDULED: %s\n" timestamp2))
+          (save-buffer)
+          (message "✅ Added 2 tentative meetings to %s" inbox-path))
+      (message "⚠️  Inbox file not found at %s" inbox-path))))
+
+(defun csf-copy-email-suggestion ()
+  "Copy selected meeting slots as an email suggestion to clipboard."
+  (interactive)
+  (if (= csf-last-slot-count 0)
+      (message "⚠️  No free slots available to select from")
+    (let* ((slot1-idx (read-number 
+                       (format "First slot index (0-%d): " (1- csf-last-slot-count))))
+           (slot2-idx (read-number 
+                       (format "Second slot index (0-%d): " (1- csf-last-slot-count))))
+           (meeting-duration (read-number 
+                             "Meeting duration in minutes (default 30): " 
+                             csf-default-meeting-duration)))
+      
+      (if (and (>= slot1-idx 0) (< slot1-idx csf-last-slot-count)
+               (>= slot2-idx 0) (< slot2-idx csf-last-slot-count)
+               (/= slot1-idx slot2-idx))
+          (csf--format-and-copy-slots slot1-idx slot2-idx meeting-duration)
+        (message "❌ Invalid slot indices")))))
+
+(defun csf--format-and-copy-slots (slot1-idx slot2-idx duration)
+  "Format selected slots into email suggestion and copy to clipboard."
+  (let* ((script-path (csf--get-python-script-path))
+         (python-cmd (or (executable-find "python3") (executable-find "python")))
+         (config-file (csf--create-config-file))
+         (org-files (nth 0 csf-last-search-params))
+         (gcal-file (nth 1 csf-last-search-params))
+         (args (list script-path
+                     "--week-offset" (number-to-string csf-current-week-offset)
+                     "--config-file" config-file
+                     "--non-interactive"
+                     "--format-slots" (number-to-string slot1-idx) (number-to-string slot2-idx)
+                     "--duration" (number-to-string duration))))
+    
+    (when org-files
+      (setq args (append args (cons "--org-files" org-files))))
+    
+    (when gcal-file
+      (setq args (append args (list "--gcal-file" gcal-file))))
+    
+    (message "⏳ Generating email suggestion...")
+    
+    (let ((output (with-output-to-string
+                    (with-current-buffer standard-output
+                      (let ((exit-code (apply #'call-process python-cmd nil t nil args)))
+                        (when (file-exists-p config-file)
+                          (delete-file config-file))
+                        
+                        (if (/= exit-code 0)
+                            (error "❌ Failed to generate email suggestion")))))))
+      
+      (condition-case err
+          (let* ((json-data (json-parse-string output))
+                 (success (gethash "success" json-data))
+                 (suggestion (gethash "suggestion" json-data)))
+            
+            (if success
+                (progn
+                  (kill-new suggestion)
+                  (message "✅ Email suggestion copied to clipboard!")
+                  (let ((slot1-info (aref (gethash "slots" json-data) 0))
+                        (slot2-info (aref (gethash "slots" json-data) 1)))
+                    (message "📧 Slots: %s at %s, %s at %s"
+                             (gethash "date" slot1-info)
+                             (gethash "time" slot1-info)
+                             (gethash "date" slot2-info)
+                             (gethash "time" slot2-info)))
+                  
+                  ;; Ask if user wants to create org entries
+                  (when (y-or-n-p "Create tentative meeting entries in org file? ")
+                    (let ((person (read-string "Who is this meeting with? ")))
+                      (when (and person (not (string-empty-p person)))
+                        (csf--create-org-entries 
+                         (aref (gethash "slots" json-data) 0)
+                         (aref (gethash "slots" json-data) 1)
+                         duration
+                         person)))))
+              (error "Failed to generate suggestion")))
+        (error (message "❌ Error parsing response: %s" err))))))
 
 ;;; Helper Functions
 
@@ -220,7 +393,7 @@ If nil, assumes the script is in the same directory as this file."
                          (csf--get-week-description week-offset))
                  'face 'bold))
         (insert (propertize 
-                 "📖 Navigation: n=next week, p=previous week, g=goto week, r=refresh, q=quit\n\n"
+                 "📖 Navigation: n=next week, p=previous week, g=goto week, r=refresh, c=copy email+create org entries, q=quit\n\n"
                  'face 'italic))
         
         (let ((exit-code (apply #'call-process python-cmd nil t nil args)))
@@ -229,10 +402,18 @@ If nil, assumes the script is in the same directory as this file."
           
           (if (= exit-code 0)
               (progn
+                ;; Count the number of slots [0], [1], etc.
+                (let ((slot-count 0))
+                  (save-excursion
+                    (goto-char (point-min))
+                    (while (re-search-forward "^   \\[\\([0-9]+\\)\\]" nil t)
+                      (setq slot-count (1+ slot-count))))
+                  (setq csf-last-slot-count slot-count))
+                
                 (setq buffer-read-only nil)
                 (csf-results-mode)
                 (goto-char (point-min))
-                (message "✅ Found available time slots! Use n/p to navigate weeks, q to quit."))
+                (message "✅ Found available time slots! Press c to copy email + create org entries, use n/p to navigate weeks, q to quit."))
             (error "❌ Search failed. Check *Calendar Slot Finder* buffer for details")))))))
 
 ;;; Interactive Commands

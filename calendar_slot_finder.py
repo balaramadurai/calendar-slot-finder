@@ -381,6 +381,32 @@ def print_boxed_header(text, padding=2):
     print(f"┃{' ' * padding}{text}{' ' * padding}┃")
     print(f"{' '}{'━' * total_width}")
 
+def format_meeting_suggestion(slots: List[TimeSlot], duration_minutes: int = 30) -> str:
+    """Format 2 selected slots into an email snippet"""
+    if len(slots) < 2:
+        return ""
+    
+    slot1, slot2 = slots[0], slots[1]
+    
+    # Format the suggestion text
+    suggestion = f"May I suggest a meeting of {duration_minutes} minutes on either\n\n"
+    
+    # Format slot 1 - match the example format
+    day1_name = slot1.start.strftime("%a, %b %d, %Y")
+    time1 = slot1.start.strftime("%I:%M%p").lstrip('0').replace(' 0', ' ')  # 02:30pm -> 2:30pm
+    suggestion += f"{day1_name}, {time1}\n\n"
+    
+    # Format slot 2
+    day2_name = slot2.start.strftime("%a, %b %d, %Y")
+    time2 = slot2.start.strftime("%I:%M%p").lstrip('0').replace(' 0', ' ')
+    suggestion += f"or\n\n"
+    suggestion += f"{day2_name}, {time2}?\n\n"
+    
+    # Add closing
+    suggestion += "If you are not available, please feel free to suggest another time based on your convenience."
+    
+    return suggestion
+
 def main():
     parser = argparse.ArgumentParser(description='Find empty calendar slots')
     parser.add_argument('--week-offset', type=int, default=1, 
@@ -393,6 +419,10 @@ def main():
                        help='Skip interactive setup')
     parser.add_argument('--config-file',
                        help='JSON file with configuration (working hours, restrictions, etc.)')
+    parser.add_argument('--format-slots', nargs=2, type=int, metavar=('SLOT1_IDX', 'SLOT2_IDX'),
+                       help='Format 2 slots (by index) into email suggestion and output as JSON')
+    parser.add_argument('--duration', type=int, default=30,
+                       help='Meeting duration in minutes for email suggestion (default: 30)')
     
     args = parser.parse_args()
     
@@ -431,6 +461,29 @@ def main():
 
     free_slots = finder.find_free_slots(week_start, week_end)
 
+    # Handle --format-slots mode
+    if args.format_slots:
+        idx1, idx2 = args.format_slots
+        if idx1 < len(free_slots) and idx2 < len(free_slots):
+            selected_slots = [free_slots[idx1], free_slots[idx2]]
+            suggestion = format_meeting_suggestion(selected_slots, args.duration)
+            # Output as JSON for easy parsing by Elisp
+            output = {
+                "success": True,
+                "suggestion": suggestion,
+                "slots": [
+                    {
+                        "date": slot.start.strftime("%a, %b %d, %Y"),
+                        "time": slot.start.strftime("%I:%M%p").lstrip('0').replace(' 0', ' ')
+                    }
+                    for slot in selected_slots
+                ]
+            }
+            print(json.dumps(output))
+        else:
+            print(json.dumps({"success": False, "error": "Invalid slot indices"}))
+        return
+
     # Display results FIRST
 
     print_boxed_header(f"FREE TIME SLOTS - {week_start.strftime('%A, %B %d')} to {week_end.strftime('%A, %B %d, %Y')}")
@@ -445,12 +498,12 @@ def main():
         print(f"\n✅ Found {len(free_slots)} available time slots:\n")
         
         current_date = None
-        for slot in free_slots:
+        for idx, slot in enumerate(free_slots):
             if slot.start.date() != current_date:
                 current_date = slot.start.date()
                 print(f"📅 {current_date.strftime('%A, %B %d, %Y')}:")
             
-            print(f"   🕐 {slot.start.strftime('%H:%M')} - {slot.end.strftime('%H:%M')} "
+            print(f"   [{idx}] 🕐 {slot.start.strftime('%H:%M')} - {slot.end.strftime('%H:%M')} "
                   f"({slot.duration_minutes()} min)")
     
     # Then show configuration details
