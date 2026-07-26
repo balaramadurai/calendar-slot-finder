@@ -39,6 +39,8 @@ class CalendarSlotFinder:
         self.working_hours = (datetime.time(9, 0), datetime.time(17, 0))
         self.min_slot_duration = 60  # minutes
         self.meeting_cushion = 15  # minutes buffer before/after meetings
+        # Default done keywords, can be overridden from org-todo-keywords
+        self.done_keywords: set = {'DONE', 'CANCELLED', 'CANCELED'}
         
     def add_restriction(self, restriction: WeeklyRestriction):
         """Add a weekly recurring restriction (e.g., meeting hours)"""
@@ -81,19 +83,31 @@ class CalendarSlotFinder:
     def parse_org_file(self, filepath: str) -> List[TimeSlot]:
         """Parse org file for scheduled items and deadlines"""
         slots = []
+
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 content = f.read()
-            
+
             # Find entries with timestamps
             lines = content.split('\n')
             current_heading = ""
-            
+            current_is_done = False
+
             for line in lines:
-                # Track current heading
+                # Track current heading and check for done state
                 if line.strip().startswith('*'):
                     current_heading = re.sub(r'^\*+\s*', '', line.strip())
-                
+                    # Check if this heading has a done TODO keyword
+                    heading_words = current_heading.split()
+                    current_is_done = (
+                        len(heading_words) > 0 and
+                        heading_words[0].upper().rstrip(':') in self.done_keywords
+                    )
+
+                # Skip done entries
+                if current_is_done:
+                    continue
+
                 # Look for scheduled items and timestamps
                 if any(keyword in line for keyword in ['SCHEDULED:', 'DEADLINE:', '<', '[']):
                     timestamp_result = self.parse_org_timestamp(line)
@@ -284,7 +298,12 @@ def load_config_from_file(config_file: str) -> CalendarSlotFinder:
         # Set meeting cushion
         if 'meeting_cushion' in config:
             finder.meeting_cushion = int(config['meeting_cushion'])
-        
+
+        # Set done keywords from org-todo-keywords
+        if 'done_keywords' in config and isinstance(config['done_keywords'], list):
+            # Convert to uppercase set for case-insensitive matching
+            finder.done_keywords = {kw.upper() for kw in config['done_keywords']}
+
         # Add restrictions
         if 'restrictions' in config and isinstance(config['restrictions'], list):
             for restriction_data in config['restrictions']:
@@ -423,6 +442,8 @@ def main():
                        help='Format 2 slots (by index) into email suggestion and output as JSON')
     parser.add_argument('--duration', type=int, default=30,
                        help='Meeting duration in minutes for email suggestion (default: 30)')
+    parser.add_argument('--num-weeks', type=int, default=1,
+                       help='Number of weeks to search (default: 1)')
     
     args = parser.parse_args()
     
@@ -457,7 +478,7 @@ def main():
     # Calculate date range
     today = datetime.date.today()
     week_start = today + datetime.timedelta(days=(7 * args.week_offset) - today.weekday())
-    week_end = week_start + datetime.timedelta(days=6)
+    week_end = week_start + datetime.timedelta(days=(7 * args.num_weeks) - 1)
 
     free_slots = finder.find_free_slots(week_start, week_end)
 

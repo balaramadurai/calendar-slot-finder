@@ -62,6 +62,12 @@ If nil, assumes the script is in the same directory as this file."
   :type 'integer
   :group 'calendar-slot-finder)
 
+(defcustom csf-num-weeks 1
+  "Number of weeks to display slots for.
+Set to 2 or more to select slots across multiple weeks."
+  :type 'integer
+  :group 'calendar-slot-finder)
+
 (defcustom csf-inbox-file "~/Documents/0Inbox/index.org"
   "Path to the inbox org file where tentative meetings are stored."
   :type 'file
@@ -95,6 +101,7 @@ If nil, assumes the script is in the same directory as this file."
 (define-key csf-results-mode-map "r" 'csf-refresh-current-week)
 (define-key csf-results-mode-map "g" 'csf-goto-week)
 (define-key csf-results-mode-map "c" 'csf-copy-email-suggestion)
+(define-key csf-results-mode-map "w" 'csf-set-num-weeks)
 (define-key csf-results-mode-map "?" 'csf-show-help)
 
 (define-derived-mode csf-results-mode fundamental-mode "Calendar-Slots"
@@ -132,10 +139,18 @@ If nil, assumes the script is in the same directory as this file."
     (setq csf-current-week-offset offset)
     (csf--refresh-with-current-params)))
 
+(defun csf-set-num-weeks (weeks)
+  "Set the number of weeks to display and refresh."
+  (interactive "nNumber of weeks to show: ")
+  (setq csf-num-weeks (max 1 weeks))
+  (when csf-last-search-params
+    (csf--refresh-with-current-params))
+  (message "Showing %d week(s)" csf-num-weeks))
+
 (defun csf-show-help ()
   "Show help for Calendar Slot Finder."
   (interactive)
-  (message "Calendar Slot Finder: q=quit, n=next week, p=previous week, r=refresh, g=goto week, c=copy email+org, ?=help"))
+  (message "Calendar Slot Finder: q=quit, n=next week, p=previous week, r=refresh, g=goto week, w=set weeks, c=copy email+org, ?=help"))
 
 ;;; Email Suggestion Functions
 
@@ -215,23 +230,29 @@ PERSON: Who the meeting is with"
       (message "⚠️  Inbox file not found at %s" inbox-path))))
 
 (defun csf-copy-email-suggestion ()
-  "Copy selected meeting slots as an email suggestion to clipboard."
+  "Copy selected meeting slots as an email suggestion to clipboard.
+Enter exactly 2 slot indices as comma-separated values (e.g. \"1,3\" or \"4,5\")."
   (interactive)
   (if (= csf-last-slot-count 0)
       (message "⚠️  No free slots available to select from")
-    (let* ((slot1-idx (read-number 
-                       (format "First slot index (0-%d): " (1- csf-last-slot-count))))
-           (slot2-idx (read-number 
-                       (format "Second slot index (0-%d): " (1- csf-last-slot-count))))
-           (meeting-duration (read-number 
-                             "Meeting duration in minutes (default 30): " 
-                             csf-default-meeting-duration)))
-      
-      (if (and (>= slot1-idx 0) (< slot1-idx csf-last-slot-count)
-               (>= slot2-idx 0) (< slot2-idx csf-last-slot-count)
-               (/= slot1-idx slot2-idx))
-          (csf--format-and-copy-slots slot1-idx slot2-idx meeting-duration)
-        (message "❌ Invalid slot indices")))))
+    (let* ((input (read-string
+                   (format "Two slot indices, comma-separated (0-%d), e.g. 1,3: "
+                           (1- csf-last-slot-count))))
+           (indices (mapcar #'string-to-number
+                            (split-string input "," t "[ \t]+")))
+           (meeting-duration (read-number
+                              "Meeting duration in minutes (default 30): "
+                              csf-default-meeting-duration)))
+      (cond
+       ((/= (length indices) 2)
+        (message "❌ Please enter exactly 2 indices (e.g. \"1,3\")"))
+       ((= (nth 0 indices) (nth 1 indices))
+        (message "❌ The two indices must be different"))
+       ((or (< (nth 0 indices) 0) (>= (nth 0 indices) csf-last-slot-count)
+            (< (nth 1 indices) 0) (>= (nth 1 indices) csf-last-slot-count))
+        (message "❌ Indices must be between 0 and %d" (1- csf-last-slot-count)))
+       (t
+        (csf--format-and-copy-slots (nth 0 indices) (nth 1 indices) meeting-duration))))))
 
 (defun csf--format-and-copy-slots (slot1-idx slot2-idx duration)
   "Format selected slots into email suggestion and copy to clipboard."
@@ -242,6 +263,7 @@ PERSON: Who the meeting is with"
          (gcal-file (nth 1 csf-last-search-params))
          (args (list script-path
                      "--week-offset" (number-to-string csf-current-week-offset)
+                     "--num-weeks" (number-to-string csf-num-weeks)
                      "--config-file" config-file
                      "--non-interactive"
                      "--format-slots" (number-to-string slot1-idx) (number-to-string slot2-idx)
@@ -330,15 +352,38 @@ PERSON: Who the meeting is with"
    ((< offset -1) (format "%d weeks ago" (- offset)))
    (t (format "Week offset %d" offset))))
 
+(defun csf--extract-done-keywords ()
+  "Extract done state keywords from `org-todo-keywords'.
+In org-todo-keywords, everything after the \"|\" is a done state."
+  (let ((done-keywords '()))
+    (when (boundp 'org-todo-keywords)
+      (dolist (sequence org-todo-keywords)
+        (when (listp sequence)
+          (let ((after-pipe nil))
+            (dolist (item (cdr sequence))  ; skip 'sequence symbol
+              (cond
+               ((string= item "|")
+                (setq after-pipe t))
+               (after-pipe
+                ;; Extract keyword, stripping (x) or (x@/!) notation
+                (let ((keyword (replace-regexp-in-string "(.*)" "" item)))
+                  (push keyword done-keywords)))))))))
+    (delete-dups done-keywords)))
+
 (defun csf--create-config-file ()
   "Create a temporary configuration file for the Python script."
   (let ((config-file (make-temp-file "csf-config" nil ".json"))
         (config-data (list)))
-    
+
     (push (cons "working_hours" (vector (car csf-working-hours) (cadr csf-working-hours))) config-data)
     (push (cons "min_slot_duration" csf-min-slot-duration) config-data)
     (push (cons "meeting_cushion" csf-meeting-cushion) config-data)
-    
+
+    ;; Add done keywords from org-todo-keywords
+    (let ((done-keywords (csf--extract-done-keywords)))
+      (when done-keywords
+        (push (cons "done_keywords" (vconcat done-keywords)) config-data)))
+
     (when csf-weekly-restrictions
       (let ((restrictions-json '()))
         (dolist (restriction csf-weekly-restrictions)
@@ -349,10 +394,10 @@ PERSON: Who the meeting is with"
             (push (cons "description" (plist-get restriction :description)) restriction-json)
             (push restriction-json restrictions-json)))
         (push (cons "restrictions" (vconcat (reverse restrictions-json))) config-data)))
-    
+
     (with-temp-file config-file
       (insert (json-encode (reverse config-data))))
-    
+
     config-file))
 
 (defun csf--refresh-with-current-params ()
@@ -369,9 +414,10 @@ PERSON: Who the meeting is with"
          (config-file (csf--create-config-file))
          (args (list script-path
                      "--week-offset" (number-to-string week-offset)
+                     "--num-weeks" (number-to-string csf-num-weeks)
                      "--config-file" config-file
                      "--non-interactive")))
-    
+
     (setq csf-last-search-params (list org-files gcal-file))
     (setq csf-current-week-offset week-offset)
     
@@ -388,12 +434,13 @@ PERSON: Who the meeting is with"
       
       (let ((inhibit-read-only t))
         (erase-buffer)
-        (insert (propertize 
-                 (format "=== Calendar Slot Finder - %s ===\n" 
-                         (csf--get-week-description week-offset))
+        (insert (propertize
+                 (format "=== Calendar Slot Finder - %s%s ===\n"
+                         (csf--get-week-description week-offset)
+                         (if (> csf-num-weeks 1) (format " (%d weeks)" csf-num-weeks) ""))
                  'face 'bold))
-        (insert (propertize 
-                 "📖 Navigation: n=next week, p=previous week, g=goto week, r=refresh, c=copy email+create org entries, q=quit\n\n"
+        (insert (propertize
+                 "📖 Navigation: n=next, p=prev, g=goto, w=set weeks, r=refresh, c=copy email+org, q=quit\n\n"
                  'face 'italic))
         
         (let ((exit-code (apply #'call-process python-cmd nil t nil args)))
