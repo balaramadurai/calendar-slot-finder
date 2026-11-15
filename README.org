@@ -152,6 +152,24 @@ This will prompt for week offset and interactive setup.
          :description "Team meeting hours")))
 #+end_src
 
+*** Skip specific Google calendars
+:PROPERTIES:
+:CUSTOM_ID: skip-google-calendars
+:END:
+Events synced by org-gcal carry their calendar ID in the =entry-id=
+property (=EVENTID/CALENDARID=). Calendars listed in
+=csf-excluded-gcal-calendars= never block a slot, so calendars that
+merely mirror your own tasks can be ignored.
+#+begin_src elisp
+;; names -> calendar IDs (or a variable holding such an alist)
+(setq csf-gcal-calendar-aliases '((tasks . "c_abc123@group.calendar.google.com")))
+;; symbols use the aliases; strings are regexps matched against the ID
+(setq csf-excluded-gcal-calendars '(tasks "^c_def456"))
+;; optional: org entries with no Google entry-id stop blocking too,
+;; so only real Google Calendar events count as busy
+(setq csf-include-plain-org-entries nil)
+#+end_src
+
 *** Customize working hours
 :PROPERTIES:
 :CUSTOM_ID: custom-working-hours

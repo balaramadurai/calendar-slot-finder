@@ -38,10 +38,17 @@ class CalendarSlotFinder:
         self.restrictions: List[WeeklyRestriction] = []
         self.working_hours = (datetime.time(9, 0), datetime.time(17, 0))
         self.min_slot_duration = 60  # minutes
+        self.slot_duration = 30  # minutes; size of each displayed block within a free gap
         self.meeting_cushion = 15  # minutes buffer before/after meetings
         # Default done keywords, can be overridden from org-todo-keywords
         self.done_keywords: set = {'DONE', 'CANCELLED', 'CANCELED'}
-        
+        # Regexps matched (re.search) against an org-gcal entry's calendar id;
+        # entries from matching calendars never count as busy.
+        self.excluded_calendars: List[str] = []
+        # When False, org entries with no org-gcal entry-id are ignored too,
+        # so only real Google Calendar events block time.
+        self.include_plain_entries: bool = True
+
     def add_restriction(self, restriction: WeeklyRestriction):
         """Add a weekly recurring restriction (e.g., meeting hours)"""
         self.restrictions.append(restriction)
@@ -80,6 +87,27 @@ class CalendarSlotFinder:
                     continue
         return None
     
+    @staticmethod
+    def calendar_id_from_entry_id(value: str) -> Optional[str]:
+        """Calendar id from an org-gcal entry-id ('EVENTID/CALENDARID')."""
+        value = value.strip().strip('"')
+        if '/' not in value:
+            return None
+        return value.split('/', 1)[1] or None
+
+    def is_excluded_calendar(self, calendar_id: Optional[str]) -> bool:
+        """True if events from CALENDAR_ID should be skipped as busy time."""
+        if calendar_id is None:
+            return not self.include_plain_entries
+        for pattern in self.excluded_calendars:
+            try:
+                if re.search(pattern, calendar_id):
+                    return True
+            except re.error:
+                if pattern == calendar_id:
+                    return True
+        return False
+
     def parse_org_file(self, filepath: str) -> List[TimeSlot]:
         """Parse org file for scheduled items and deadlines"""
         slots = []
@@ -88,14 +116,25 @@ class CalendarSlotFinder:
             with open(filepath, 'r', encoding='utf-8') as f:
                 content = f.read()
 
-            # Find entries with timestamps
+            # Find entries with timestamps.  Slots are collected per heading
+            # and kept only when the entry's Google calendar (from the
+            # org-gcal entry-id property) is not excluded.
             lines = content.split('\n')
             current_heading = ""
             current_is_done = False
+            entry_slots: List[TimeSlot] = []
+            entry_calendar: Optional[str] = None
+
+            def flush():
+                if entry_slots and not self.is_excluded_calendar(entry_calendar):
+                    slots.extend(entry_slots)
 
             for line in lines:
                 # Track current heading and check for done state
                 if line.strip().startswith('*'):
+                    flush()
+                    entry_slots = []
+                    entry_calendar = None
                     current_heading = re.sub(r'^\*+\s*', '', line.strip())
                     # Check if this heading has a done TODO keyword
                     heading_words = current_heading.split()
@@ -108,14 +147,21 @@ class CalendarSlotFinder:
                 if current_is_done:
                     continue
 
+                id_match = re.match(r'\s*:entry-id:\s*(\S+)', line, re.IGNORECASE)
+                if id_match:
+                    entry_calendar = self.calendar_id_from_entry_id(id_match.group(1))
+                    continue
+
                 # Look for scheduled items and timestamps
                 if any(keyword in line for keyword in ['SCHEDULED:', 'DEADLINE:', '<', '[']):
                     timestamp_result = self.parse_org_timestamp(line)
                     if timestamp_result:
                         start_dt, end_dt = timestamp_result
                         title = current_heading if current_heading else "Org entry"
-                        slots.append(TimeSlot(start_dt, end_dt, title))
-        
+                        entry_slots.append(TimeSlot(start_dt, end_dt, title))
+
+            flush()
+
         except FileNotFoundError:
             pass  # File doesn't exist, skip silently
         except Exception as e:
@@ -201,6 +247,17 @@ class CalendarSlotFinder:
         
         return blocked_slots
     
+    def _split_gap_into_slots(self, gap_start: datetime.datetime, gap_end: datetime.datetime) -> List[TimeSlot]:
+        """Split a free gap into consecutive slot_duration-minute blocks, dropping any remainder."""
+        slots = []
+        chunk = datetime.timedelta(minutes=self.slot_duration)
+        current = gap_start
+        while current + chunk <= gap_end:
+            chunk_end = current + chunk
+            slots.append(TimeSlot(current, chunk_end, f"Free ({self.slot_duration} min)"))
+            current = chunk_end
+        return slots
+
     def find_free_slots(self, start_date: datetime.date, end_date: datetime.date) -> List[TimeSlot]:
         """Find free time slots in the given date range"""
         # Get all busy slots in the date range
@@ -231,8 +288,12 @@ class CalendarSlotFinder:
         
         # Find free slots
         free_slots = []
-        current_date = start_date
-        
+        today = datetime.date.today()
+        now = datetime.datetime.now()
+        # If today falls within the displayed range, don't generate slots for
+        # already-elapsed days; leave explicitly-requested past ranges alone.
+        current_date = max(start_date, today) if start_date <= today <= end_date else start_date
+
         while current_date <= end_date:
             # Skip weekends if specified in working hours
             if current_date.weekday() >= 5:  # Saturday, Sunday
@@ -241,6 +302,8 @@ class CalendarSlotFinder:
             
             day_start = datetime.datetime.combine(current_date, self.working_hours[0])
             day_end = datetime.datetime.combine(current_date, self.working_hours[1])
+            if current_date == today:
+                day_start = max(day_start, now)
             
             # Get busy slots for this day
             day_busy_slots = [s for s in relevant_slots 
@@ -258,7 +321,7 @@ class CalendarSlotFinder:
                 if gap_end > gap_start:
                     gap_duration = int((gap_end - gap_start).total_seconds() / 60)
                     if gap_duration >= self.min_slot_duration:
-                        free_slots.append(TimeSlot(gap_start, gap_end, f"Free ({gap_duration} min)"))
+                        free_slots.extend(self._split_gap_into_slots(gap_start, gap_end))
                 
                 current_time = max(current_time, busy_slot.end)
             
@@ -266,7 +329,7 @@ class CalendarSlotFinder:
             if current_time < day_end:
                 gap_duration = int((day_end - current_time).total_seconds() / 60)
                 if gap_duration >= self.min_slot_duration:
-                    free_slots.append(TimeSlot(current_time, day_end, f"Free ({gap_duration} min)"))
+                    free_slots.extend(self._split_gap_into_slots(current_time, day_end))
             
             current_date += datetime.timedelta(days=1)
         
@@ -295,6 +358,10 @@ def load_config_from_file(config_file: str) -> CalendarSlotFinder:
         if 'min_slot_duration' in config:
             finder.min_slot_duration = int(config['min_slot_duration'])
         
+        # Set slot duration (size of each displayed block within a free gap)
+        if 'slot_duration' in config:
+            finder.slot_duration = int(config['slot_duration'])
+
         # Set meeting cushion
         if 'meeting_cushion' in config:
             finder.meeting_cushion = int(config['meeting_cushion'])
@@ -303,6 +370,12 @@ def load_config_from_file(config_file: str) -> CalendarSlotFinder:
         if 'done_keywords' in config and isinstance(config['done_keywords'], list):
             # Convert to uppercase set for case-insensitive matching
             finder.done_keywords = {kw.upper() for kw in config['done_keywords']}
+
+        # Google calendars whose events never block time
+        if isinstance(config.get('excluded_calendars'), list):
+            finder.excluded_calendars = [str(c) for c in config['excluded_calendars']]
+        if 'include_plain_entries' in config:
+            finder.include_plain_entries = bool(config['include_plain_entries'])
 
         # Add restrictions
         if 'restrictions' in config and isinstance(config['restrictions'], list):
@@ -401,12 +474,21 @@ def print_boxed_header(text, padding=2):
     print(f"{' '}{'━' * total_width}")
 
 def format_meeting_suggestion(slots: List[TimeSlot], duration_minutes: int = 30) -> str:
-    """Format 2 selected slots into an email snippet"""
-    if len(slots) < 2:
+    """Format 1 or 2 selected slots into an email snippet"""
+    if not slots:
         return ""
-    
+
+    if len(slots) == 1:
+        slot1 = slots[0]
+        day1_name = slot1.start.strftime("%a, %b %d, %Y")
+        time1 = slot1.start.strftime("%I:%M%p").lstrip('0').replace(' 0', ' ')
+        suggestion = f"May I suggest a meeting of {duration_minutes} minutes on\n\n"
+        suggestion += f"{day1_name}, {time1}?\n\n"
+        suggestion += "If you are not available, please feel free to suggest another time based on your convenience."
+        return suggestion
+
     slot1, slot2 = slots[0], slots[1]
-    
+
     # Format the suggestion text
     suggestion = f"May I suggest a meeting of {duration_minutes} minutes on either\n\n"
     
@@ -438,10 +520,12 @@ def main():
                        help='Skip interactive setup')
     parser.add_argument('--config-file',
                        help='JSON file with configuration (working hours, restrictions, etc.)')
-    parser.add_argument('--format-slots', nargs=2, type=int, metavar=('SLOT1_IDX', 'SLOT2_IDX'),
-                       help='Format 2 slots (by index) into email suggestion and output as JSON')
+    parser.add_argument('--format-slots', nargs='+', type=int, metavar='IDX',
+                       help='Format 1 or 2 slots (by index) into email suggestion and output as JSON')
     parser.add_argument('--duration', type=int, default=30,
                        help='Meeting duration in minutes for email suggestion (default: 30)')
+    parser.add_argument('--slot-duration', type=int, default=30,
+                       help='Size in minutes of each displayed free-time block within a gap (default: 30)')
     parser.add_argument('--num-weeks', type=int, default=1,
                        help='Number of weeks to search (default: 1)')
     
@@ -451,6 +535,7 @@ def main():
         finder = load_config_from_file(args.config_file)
     elif args.non_interactive:
         finder = CalendarSlotFinder()
+        finder.slot_duration = args.slot_duration
         # Add example restriction for demo
         finder.add_restriction(WeeklyRestriction(
             days=[0, 1, 2, 3, 4],  # Weekdays
@@ -484,9 +569,11 @@ def main():
 
     # Handle --format-slots mode
     if args.format_slots:
-        idx1, idx2 = args.format_slots
-        if idx1 < len(free_slots) and idx2 < len(free_slots):
-            selected_slots = [free_slots[idx1], free_slots[idx2]]
+        indices = args.format_slots
+        if len(indices) not in (1, 2):
+            print(json.dumps({"success": False, "error": "Provide 1 or 2 slot indices"}))
+        elif all(0 <= idx < len(free_slots) for idx in indices):
+            selected_slots = [free_slots[idx] for idx in indices]
             suggestion = format_meeting_suggestion(selected_slots, args.duration)
             # Output as JSON for easy parsing by Elisp
             output = {
@@ -495,7 +582,8 @@ def main():
                 "slots": [
                     {
                         "date": slot.start.strftime("%a, %b %d, %Y"),
-                        "time": slot.start.strftime("%I:%M%p").lstrip('0').replace(' 0', ' ')
+                        "time": slot.start.strftime("%I:%M%p").lstrip('0').replace(' 0', ' '),
+                        "duration_minutes": slot.duration_minutes()
                     }
                     for slot in selected_slots
                 ]

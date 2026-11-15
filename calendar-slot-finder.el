@@ -18,6 +18,8 @@
 (require 'org)
 (require 'org-agenda)
 (require 'json)
+(require 'seq)
+(require 'subr-x)
 
 ;;; Customization
 
@@ -52,6 +54,14 @@ If nil, assumes the script is in the same directory as this file."
   :type 'integer
   :group 'calendar-slot-finder)
 
+(defcustom csf-slot-duration 30
+  "Default slot duration in minutes to split each free gap into.
+Prompted for on every interactive `csf-find-slots' call (30, 45, or a
+custom value); this is only the fallback used by non-interactive
+callers such as `csf-find-slots-quick'."
+  :type 'integer
+  :group 'calendar-slot-finder)
+
 (defcustom csf-meeting-cushion 15
   "Buffer time in minutes before and after meetings."
   :type 'integer
@@ -73,6 +83,53 @@ Set to 2 or more to select slots across multiple weeks."
   :type 'file
   :group 'calendar-slot-finder)
 
+;;; Google Calendar exceptions
+
+(defcustom csf-gcal-calendar-aliases nil
+  "Alist of (SYMBOL . GOOGLE-CALENDAR-ID) naming calendars.
+Lets `csf-excluded-gcal-calendars' refer to calendars by a short symbol
+instead of their long ID.  May also be a variable holding such an alist,
+e.g. `modern-emacs/gcal-calendar-ids'."
+  :type '(choice (alist :key-type symbol :value-type string)
+                 (variable :tag "Variable holding an alist"))
+  :group 'calendar-slot-finder)
+
+(defcustom csf-excluded-gcal-calendars nil
+  "Google calendars whose events never block a free slot.
+Each element is either
+ - a string: a regexp matched (`string-match-p') against the calendar ID
+   stored in the org-gcal `entry-id' property (EVENTID/CALENDARID).  An
+   exact ID works as-is; anchor with ^ and $ to be strict; or
+ - a symbol: looked up in `csf-gcal-calendar-aliases'.
+Use this to skip calendars that mirror your own Emacs tasks, e.g.
+  (setq csf-excluded-gcal-calendars \='(work personal clocked done))"
+  :type '(repeat (choice symbol string))
+  :group 'calendar-slot-finder)
+
+(defcustom csf-include-plain-org-entries t
+  "Whether org entries without a Google Calendar entry-id block time.
+Set to nil so only real Google Calendar events (minus the calendars in
+`csf-excluded-gcal-calendars') count as busy."
+  :type 'boolean
+  :group 'calendar-slot-finder)
+
+(defun csf--excluded-calendar-patterns ()
+  "Resolve `csf-excluded-gcal-calendars' to a list of regexp strings."
+  (let ((aliases (if (and (symbolp csf-gcal-calendar-aliases)
+                          (boundp csf-gcal-calendar-aliases))
+                     (symbol-value csf-gcal-calendar-aliases)
+                   csf-gcal-calendar-aliases))
+        patterns)
+    (dolist (entry csf-excluded-gcal-calendars)
+      (cond
+       ((stringp entry) (push entry patterns))
+       ((symbolp entry)
+        (let ((id (cdr (assq entry aliases))))
+          (if id
+              (push id patterns)
+            (message "csf: no calendar alias for `%s', ignoring" entry))))))
+    (nreverse patterns)))
+
 ;;; Variables
 
 (defvar csf-weekly-restrictions nil
@@ -83,6 +140,9 @@ Set to 2 or more to select slots across multiple weeks."
 
 (defvar csf-last-search-params nil
   "Parameters from the last search for navigation.")
+
+(defvar csf-current-slot-duration nil
+  "Slot duration in minutes used for the current/last search.")
 
 (defvar csf-free-slots nil
   "List of free slots from the last search.")
@@ -123,8 +183,10 @@ Set to 2 or more to select slots across multiple weeks."
   "Show calendar slots for the previous week."
   (interactive)
   (when csf-last-search-params
-    (setq csf-current-week-offset (1- csf-current-week-offset))
-    (csf--refresh-with-current-params)))
+    (if (<= csf-current-week-offset 0)
+        (message "❌ Cannot navigate before the current week")
+      (setq csf-current-week-offset (1- csf-current-week-offset))
+      (csf--refresh-with-current-params))))
 
 (defun csf-refresh-current-week ()
   "Refresh the current week's calendar slots."
@@ -136,8 +198,10 @@ Set to 2 or more to select slots across multiple weeks."
   "Go to a specific week offset."
   (interactive "nWeek offset (0=current, 1=next, -1=previous): ")
   (when csf-last-search-params
-    (setq csf-current-week-offset offset)
-    (csf--refresh-with-current-params)))
+    (if (< offset 0)
+        (message "❌ Cannot navigate before the current week")
+      (setq csf-current-week-offset offset)
+      (csf--refresh-with-current-params))))
 
 (defun csf-set-num-weeks (weeks)
   "Set the number of weeks to display and refresh."
@@ -153,6 +217,17 @@ Set to 2 or more to select slots across multiple weeks."
   (message "Calendar Slot Finder: q=quit, n=next week, p=previous week, r=refresh, g=goto week, w=set weeks, c=copy email+org, ?=help"))
 
 ;;; Email Suggestion Functions
+
+(defun csf--first-slot-shorter-than (slots-vec duration)
+  "Return the first slot-info in SLOTS-VEC whose duration_minutes is
+less than DURATION, or nil if none are shorter (or duration is missing)."
+  (catch 'found
+    (dotimes (i (length slots-vec))
+      (let* ((slot-info (aref slots-vec i))
+             (slot-dur (gethash "duration_minutes" slot-info)))
+        (when (and slot-dur (< slot-dur duration))
+          (throw 'found slot-info))))
+    nil))
 
 (defun csf--create-org-timestamp (date-str time-str duration)
   "Create org timestamp from date, time, and duration.
@@ -203,40 +278,37 @@ Returns: '<2025-11-05 Wed 14:30-15:00>'"
             year month-num day-num day-name
             hour-24 minute end-hour end-minute)))
 
-(defun csf--create-org-entries (slot1-info slot2-info duration person)
+(defun csf--create-org-entries (slots-info duration person)
   "Create tentative meeting entries in inbox org file.
-SLOT1-INFO, SLOT2-INFO: Hash tables with 'date' and 'time' keys
+SLOTS-INFO: list of hash tables (1 or 2) with 'date' and 'time' keys
 DURATION: Meeting duration in minutes
 PERSON: Who the meeting is with"
-  (let* ((inbox-path (expand-file-name csf-inbox-file))
-         (slot1-date (gethash "date" slot1-info))
-         (slot1-time (gethash "time" slot1-info))
-         (slot2-date (gethash "date" slot2-info))
-         (slot2-time (gethash "time" slot2-info))
-         (timestamp1 (csf--create-org-timestamp slot1-date slot1-time duration))
-         (timestamp2 (csf--create-org-timestamp slot2-date slot2-time duration)))
-    
+  (let* ((inbox-path (expand-file-name csf-inbox-file)))
     (if (file-exists-p inbox-path)
         (with-current-buffer (find-file-noselect inbox-path)
           (goto-char (point-max))
-          (insert "\n")
-          (insert (format "* Tentative Meeting with %s\n" person))
-          (insert (format "SCHEDULED: %s\n" timestamp1))
-          (insert "\n")
-          (insert (format "* Tentative Meeting with %s\n" person))
-          (insert (format "SCHEDULED: %s\n" timestamp2))
+          (dolist (slot-info slots-info)
+            (let* ((slot-date (gethash "date" slot-info))
+                   (slot-time (gethash "time" slot-info))
+                   (timestamp (csf--create-org-timestamp slot-date slot-time duration)))
+              (insert "\n")
+              (insert (format "* Tentative Meeting with %s\n" person))
+              (insert (format "SCHEDULED: %s\n" timestamp))))
           (save-buffer)
-          (message "✅ Added 2 tentative meetings to %s" inbox-path))
+          (message "✅ Added %d tentative meeting%s to %s"
+                   (length slots-info)
+                   (if (= (length slots-info) 1) "" "s")
+                   inbox-path))
       (message "⚠️  Inbox file not found at %s" inbox-path))))
 
 (defun csf-copy-email-suggestion ()
   "Copy selected meeting slots as an email suggestion to clipboard.
-Enter exactly 2 slot indices as comma-separated values (e.g. \"1,3\" or \"4,5\")."
+Enter one or two slot indices as comma-separated values (e.g. \"1\" or \"1,3\")."
   (interactive)
   (if (= csf-last-slot-count 0)
       (message "⚠️  No free slots available to select from")
     (let* ((input (read-string
-                   (format "Two slot indices, comma-separated (0-%d), e.g. 1,3: "
+                   (format "One or two slot indices, comma-separated (0-%d), e.g. 1 or 1,3: "
                            (1- csf-last-slot-count))))
            (indices (mapcar #'string-to-number
                             (split-string input "," t "[ \t]+")))
@@ -244,31 +316,34 @@ Enter exactly 2 slot indices as comma-separated values (e.g. \"1,3\" or \"4,5\")
                               "Meeting duration in minutes (default 30): "
                               csf-default-meeting-duration)))
       (cond
-       ((/= (length indices) 2)
-        (message "❌ Please enter exactly 2 indices (e.g. \"1,3\")"))
-       ((= (nth 0 indices) (nth 1 indices))
+       ((not (memq (length indices) '(1 2)))
+        (message "❌ Please enter 1 or 2 indices (e.g. \"1\" or \"1,3\")"))
+       ((and (= (length indices) 2) (= (nth 0 indices) (nth 1 indices)))
         (message "❌ The two indices must be different"))
-       ((or (< (nth 0 indices) 0) (>= (nth 0 indices) csf-last-slot-count)
-            (< (nth 1 indices) 0) (>= (nth 1 indices) csf-last-slot-count))
+       ((seq-some (lambda (idx) (or (< idx 0) (>= idx csf-last-slot-count))) indices)
         (message "❌ Indices must be between 0 and %d" (1- csf-last-slot-count)))
        (t
-        (csf--format-and-copy-slots (nth 0 indices) (nth 1 indices) meeting-duration))))))
+        (csf--format-and-copy-slots indices meeting-duration))))))
 
-(defun csf--format-and-copy-slots (slot1-idx slot2-idx duration)
-  "Format selected slots into email suggestion and copy to clipboard."
+(defun csf--format-and-copy-slots (slot-indices duration)
+  "Format selected slots into email suggestion and copy to clipboard.
+SLOT-INDICES is a list of 1 or 2 slot indices. DURATION is the
+requested meeting length in minutes."
   (let* ((script-path (csf--get-python-script-path))
          (python-cmd (or (executable-find "python3") (executable-find "python")))
          (config-file (csf--create-config-file))
          (org-files (nth 0 csf-last-search-params))
          (gcal-file (nth 1 csf-last-search-params))
-         (args (list script-path
-                     "--week-offset" (number-to-string csf-current-week-offset)
-                     "--num-weeks" (number-to-string csf-num-weeks)
-                     "--config-file" config-file
-                     "--non-interactive"
-                     "--format-slots" (number-to-string slot1-idx) (number-to-string slot2-idx)
-                     "--duration" (number-to-string duration))))
-    
+         (args (append
+                (list script-path
+                      "--week-offset" (number-to-string csf-current-week-offset)
+                      "--num-weeks" (number-to-string csf-num-weeks)
+                      "--config-file" config-file
+                      "--non-interactive"
+                      "--format-slots")
+                (mapcar #'number-to-string slot-indices)
+                (list "--duration" (number-to-string duration)))))
+
     (when org-files
       (setq args (append args (cons "--org-files" org-files))))
     
@@ -289,30 +364,42 @@ Enter exactly 2 slot indices as comma-separated values (e.g. \"1,3\" or \"4,5\")
       (condition-case err
           (let* ((json-data (json-parse-string output))
                  (success (gethash "success" json-data))
-                 (suggestion (gethash "suggestion" json-data)))
-            
-            (if success
-                (progn
+                 (suggestion (gethash "suggestion" json-data))
+                 (slots-vec (gethash "slots" json-data)))
+
+            (if (not success)
+                (error "Failed to generate suggestion")
+              (let* ((short-slot (and slots-vec
+                                       (csf--first-slot-shorter-than slots-vec duration)))
+                     (proceed (or (not short-slot)
+                                  (y-or-n-p
+                                   (format "Slot on %s at %s is only %d min, shorter than the requested %d min. Proceed with the shorter duration? "
+                                           (gethash "date" short-slot)
+                                           (gethash "time" short-slot)
+                                           (gethash "duration_minutes" short-slot)
+                                           duration)))))
+                (if (not proceed)
+                    (message "❌ Cancelled - adjust the requested duration or choose a different slot")
                   (kill-new suggestion)
                   (message "✅ Email suggestion copied to clipboard!")
-                  (let ((slot1-info (aref (gethash "slots" json-data) 0))
-                        (slot2-info (aref (gethash "slots" json-data) 1)))
-                    (message "📧 Slots: %s at %s, %s at %s"
-                             (gethash "date" slot1-info)
-                             (gethash "time" slot1-info)
-                             (gethash "date" slot2-info)
-                             (gethash "time" slot2-info)))
-                  
+                  (if (= (length slots-vec) 2)
+                      (let ((slot1-info (aref slots-vec 0))
+                            (slot2-info (aref slots-vec 1)))
+                        (message "📧 Slots: %s at %s, %s at %s"
+                                 (gethash "date" slot1-info)
+                                 (gethash "time" slot1-info)
+                                 (gethash "date" slot2-info)
+                                 (gethash "time" slot2-info)))
+                    (let ((slot1-info (aref slots-vec 0)))
+                      (message "📧 Slot: %s at %s"
+                               (gethash "date" slot1-info)
+                               (gethash "time" slot1-info))))
+
                   ;; Ask if user wants to create org entries
                   (when (y-or-n-p "Create tentative meeting entries in org file? ")
                     (let ((person (read-string "Who is this meeting with? ")))
                       (when (and person (not (string-empty-p person)))
-                        (csf--create-org-entries 
-                         (aref (gethash "slots" json-data) 0)
-                         (aref (gethash "slots" json-data) 1)
-                         duration
-                         person)))))
-              (error "Failed to generate suggestion")))
+                        (csf--create-org-entries (append slots-vec nil) duration person))))))))
         (error (message "❌ Error parsing response: %s" err))))))
 
 ;;; Helper Functions
@@ -370,6 +457,16 @@ In org-todo-keywords, everything after the \"|\" is a done state."
                   (push keyword done-keywords)))))))))
     (delete-dups done-keywords)))
 
+(defun csf--prompt-slot-duration ()
+  "Prompt the user to choose a slot duration: 30, 45, or a custom value."
+  (let ((choice (completing-read "Slot duration? "
+                                  '("30 minutes" "45 minutes" "Custom...")
+                                  nil t)))
+    (cond
+     ((string= choice "30 minutes") 30)
+     ((string= choice "45 minutes") 45)
+     (t (read-number "Custom slot duration (minutes): " csf-slot-duration)))))
+
 (defun csf--create-config-file ()
   "Create a temporary configuration file for the Python script."
   (let ((config-file (make-temp-file "csf-config" nil ".json"))
@@ -377,7 +474,14 @@ In org-todo-keywords, everything after the \"|\" is a done state."
 
     (push (cons "working_hours" (vector (car csf-working-hours) (cadr csf-working-hours))) config-data)
     (push (cons "min_slot_duration" csf-min-slot-duration) config-data)
+    (push (cons "slot_duration" (or csf-current-slot-duration csf-slot-duration)) config-data)
     (push (cons "meeting_cushion" csf-meeting-cushion) config-data)
+
+    (when-let* ((excluded (csf--excluded-calendar-patterns)))
+      (push (cons "excluded_calendars" (vconcat excluded)) config-data))
+    (push (cons "include_plain_entries"
+                (if csf-include-plain-org-entries t :json-false))
+          config-data)
 
     ;; Add done keywords from org-todo-keywords
     (let ((done-keywords (csf--extract-done-keywords)))
@@ -404,7 +508,10 @@ In org-todo-keywords, everything after the \"|\" is a done state."
   "Refresh the results buffer with current parameters."
   (when csf-last-search-params
     (let ((org-files (nth 0 csf-last-search-params))
-          (gcal-file (nth 1 csf-last-search-params)))
+          (gcal-file (nth 1 csf-last-search-params))
+          (slot-duration (nth 2 csf-last-search-params)))
+      (when slot-duration
+        (setq csf-current-slot-duration slot-duration))
       (csf--run-python-script csf-current-week-offset org-files gcal-file))))
 
 (defun csf--run-python-script (week-offset org-files gcal-file)
@@ -418,7 +525,7 @@ In org-todo-keywords, everything after the \"|\" is a done state."
                      "--config-file" config-file
                      "--non-interactive")))
 
-    (setq csf-last-search-params (list org-files gcal-file))
+    (setq csf-last-search-params (list org-files gcal-file csf-current-slot-duration))
     (setq csf-current-week-offset week-offset)
     
     (when org-files
@@ -466,30 +573,36 @@ In org-todo-keywords, everything after the \"|\" is a done state."
 ;;; Interactive Commands
 
 ;;;###autoload
-(defun csf-find-slots (&optional week-offset)
+(defun csf-find-slots (&optional week-offset slot-duration)
   "Find empty calendar slots for the specified week.
-With prefix argument, prompt for which week to search."
+With prefix argument, prompt for which week to search.
+Free gaps are split into SLOT-DURATION-minute blocks; when called
+interactively, always prompts for the slot duration (30, 45, or a
+custom value)."
   (interactive
    (list (if current-prefix-arg
-             (let ((week-choice (completing-read "Which week? " 
-                                               '("Current week (0)" "Next week (1)" "Previous week (-1)" "Custom...") 
+             (let ((week-choice (completing-read "Which week? "
+                                               '("Current week (0)" "Next week (1)" "Previous week (-1)" "Custom...")
                                                nil nil nil nil "Current week (0)")))
                (cond
                 ((string-match "Current week" week-choice) 0)
-                ((string-match "Next week" week-choice) 1) 
+                ((string-match "Next week" week-choice) 1)
                 ((string-match "Previous week" week-choice) -1)
-                ((string-match "Custom" week-choice) 
+                ((string-match "Custom" week-choice)
                  (read-number "Week offset: " csf-default-week-offset))
                 (t csf-default-week-offset)))
-           csf-default-week-offset)))
-  
+           csf-default-week-offset)
+         (csf--prompt-slot-duration)))
+
+  (setq csf-current-slot-duration (or slot-duration csf-slot-duration))
+
   (let ((script-path (csf--get-python-script-path)))
     (unless (file-exists-p script-path)
       (error "Python script not found at %s. Please set csf-python-script-path" script-path))
-    
+
     (let ((org-files (csf--get-org-agenda-files))
           (gcal-file csf-gcal-data-file))
-      
+
       (csf--run-python-script week-offset org-files gcal-file))))
 
 ;;;###autoload
